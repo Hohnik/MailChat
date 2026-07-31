@@ -8,6 +8,7 @@ class Settings(BaseSettings):
 
     database_url: str = "sqlite+aiosqlite:///./mailchat.db"
     credentials_master_key: str
+    sync_poll_interval_seconds: float = 60.0
 
 
 settings = Settings()  # pyright: ignore[reportCallIssue] — fields are populated from the environment

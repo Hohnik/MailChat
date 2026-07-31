@@ -33,7 +33,9 @@ async def create_account(
 
 
 async def list_accounts(session: AsyncSession) -> list[Account]:
-    result = await session.execute(select(Account).order_by(Account.connected_at))
+    result = await session.execute(
+        select(Account).options(selectinload(Account.credentials)).order_by(Account.connected_at)
+    )
     return list(result.scalars().all())
 
 

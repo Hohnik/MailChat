@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from htpy import Node, button, div, form, h1, input, label, li, p, ul
+from htpy import Node, a, button, div, form, h1, input, label, li, p, ul
 
 from mailchat.accounts.models import Account
 
@@ -33,6 +33,7 @@ def account_list(accounts: list[Account]) -> Node:
         [
             li(id=f"account-{account.id}")[
                 f"{account.address} ({account.provider})",
+                a(href=f"/accounts/{account.id}/messages")["View messages"],
                 form(
                     hx_post=f"/accounts/{account.id}/disconnect",
                     hx_target="#accounts-section",

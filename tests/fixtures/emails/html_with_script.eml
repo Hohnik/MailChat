@@ -1,0 +1,13 @@
+Subject: Ihre Bestellung wurde versandt
+From: Versand-Service <versand@shop-beispiel.de>
+To: kunde@example.com
+Date: Tue, 21 Jul 2026 09:15:00 +0200
+Message-ID: <order-12345@shop-beispiel.de>
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+MIME-Version: 1.0
+
+<html><body><p>Ihre Bestellung wurde <b>versandt</b>.</p><script>alert('xss')=
+</script><img src=3D"http://tracker.example.com/pixel.gif" onerror=3D"alert('=
+boom')"><a href=3D"javascript:alert(1)">Click me</a><a href=3D"https://shop-b=
+eispiel.de/track/12345">Sendung verfolgen</a></body></html>

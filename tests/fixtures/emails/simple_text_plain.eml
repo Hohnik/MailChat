@@ -1,0 +1,32 @@
+Return-Path: <niklas-hohn@t-online.de>
+Received: from fwd78.aul.t-online.de ([10.223.144.104])
+	by ehead24a18.aul.t-online.de with LMTP
+	id Tan4ONaIbGo+hwAAWJVKRA
+	(envelope-from <niklas-hohn@t-online.de>); Fri, 31 Jul 2026 13:36:54 +0200
+Received: from 1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.ip6.arpa ([87.176.144.121]) by fwd78.t-online.de
+	with (TLSv1.3:TLS_AES_256_GCM_SHA384 encrypted)
+	esmtp id 1wplXp-3LEpFI0; Fri, 31 Jul 2026 13:36:53 +0200
+Subject: MailChat SMTP proof of concept
+From: niklas-hohn@t-online.de
+To: niklas-hohn@t-online.de
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+MIME-Version: 1.0
+Date: Fri, 31 Jul 2026 13:36:53 +0200
+Message-ID: <1wplXp-3LEpFI0@fwd78.t-online.de>
+X-TOI-VIRUSSCAN: clean
+X-TOI-EXPURGATEID: 150726::1785497813-56FFABDE-2EE3B3AB/0/0 CLEAN NORMAL
+X-TOI-MSGID: 2c35f5bb-745a-4779-b71c-9cf690fefa26
+X-ENVELOPE-TO: <niklas-hohn@t-online.de>
+DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed; d=t-online.de;
+	s=20260216; t=1785497814; i=niklas-hohn@t-online.de;
+	bh=DKRj8481Rv7kcV4mNwLNP0YRqo5MWSLAgMhuTx1f4Bc=;
+	h=Subject:From:To:Date;
+	b=GRGWeq1XmOXqTpcFdt4VQ9jSdSkvK0BryqORGY4TpmHGbK1asC5u2C71QOkC9xBYF
+	 0xEVQP6xMWjZH/5ymJVXClikMyHa72s7t06y84Bll9gd0E2sC2IHCjN5EC6UwTJWDD
+	 UaCQw6WoJTxpV33gS6rxw2A7As7FwfF+l+QipDtMhq+/rzDTJU+akRtU51/2oJZ9Sd
+	 87Gp8M/vjA+ZknXAZ0w9B1W8R1S7HO11jZt1B/73A2L47/6ILdkzWOSt1MV0zpso0I
+	 Kxe0EuMDCISK5siVvCHwIOZm3fcWU2fbupps+AvEjqT8xmwSTzJvAfCXhXqpkc2EEB
+	 COBqKoTwMdMBw==
+
+This is a test email sent by MailChat SMTP proof of concept (issue #4).
