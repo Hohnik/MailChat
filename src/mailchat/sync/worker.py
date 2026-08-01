@@ -7,8 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mailchat.accounts import repository as accounts_repository
 from mailchat.accounts.models import Account
+from mailchat.accounts.service import imap_credentials_for
 from mailchat.messages.models import Message
-from mailchat.shared.security import decrypt
 from mailchat.sync.imap_client import ImapCredentials
 from mailchat.sync.imap_client import connect as imap_connect
 from mailchat.sync.imap_client import fetch_recent_messages
@@ -24,12 +24,7 @@ def _fetch_raw_messages(credentials: ImapCredentials) -> list[bytes]:
 
 
 async def sync_account(session: AsyncSession, account: Account) -> list[Message]:
-    credentials = ImapCredentials(
-        host=account.imap_host,
-        port=account.imap_port,
-        username=account.address,
-        password=decrypt(account.credentials.encrypted_password),
-    )
+    credentials = imap_credentials_for(account)
 
     # imaplib is blocking; offload to a thread so a slow/hanging server
     # doesn't stall the event loop (and every other account's sync with it).

@@ -33,13 +33,41 @@ def test_connect_logs_out_even_if_body_raises(mock_imap_ssl):
     mock_connection.logout.assert_called_once()
 
 
-def test_list_folders_decodes_bytes():
+def test_list_folders_returns_mailbox_names():
     connection = MagicMock()
-    connection.list.return_value = ("OK", [b'(\\HasNoChildren) "/" "INBOX"', b'(\\HasNoChildren) "/" "Sent"'])
+    connection.list.return_value = (
+        "OK",
+        [
+            b'(\\HasNoChildren) "/" "INBOX"',
+            b'(\\HasNoChildren) "/" "Sent Items"',
+            b'(\\HasNoChildren) "/" Drafts',
+            b'(\\Noselect) NIL "Public"',
+        ],
+    )
 
     folders = list_folders(connection)
 
-    assert folders == ['(\\HasNoChildren) "/" "INBOX"', '(\\HasNoChildren) "/" "Sent"']
+    assert folders == ["INBOX", "Sent Items", "Drafts", "Public"]
+
+
+def test_list_folders_reads_names_the_server_sent_as_literals():
+    connection = MagicMock()
+    connection.list.return_value = ("OK", [(b'(\\HasNoChildren) "/" {8}', b"Gesendet"), b""])
+
+    folders = list_folders(connection)
+
+    assert folders == ["Gesendet"]
+
+
+def test_list_folders_raises_on_unparsable_entry():
+    connection = MagicMock()
+    connection.list.return_value = ("OK", [b"nonsense"])
+
+    try:
+        list_folders(connection)
+        assert False, "expected RuntimeError"
+    except RuntimeError:
+        pass
 
 
 def test_list_folders_raises_on_non_ok_status():

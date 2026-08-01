@@ -18,6 +18,9 @@ class Account(Base):
     imap_port: Mapped[int] = mapped_column()
     smtp_host: Mapped[str] = mapped_column(String)
     smtp_port: Mapped[int] = mapped_column()
+    # Which IMAP folder holds this account's sent mail. Only the user can say —
+    # server folder names vary — so it stays unset until they pick one.
+    sent_folder: Mapped[str | None] = mapped_column(String, default=None)
     connected_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
 
     credentials: Mapped[Credentials] = relationship(

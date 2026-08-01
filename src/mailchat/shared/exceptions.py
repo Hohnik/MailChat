@@ -7,3 +7,11 @@ class MailChatError(Exception):
 
 class AccountConnectionError(MailChatError):
     pass
+
+
+class AccountNotFoundError(MailChatError):
+    pass
+
+
+class UnknownFolderError(MailChatError):
+    pass

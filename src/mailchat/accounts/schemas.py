@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 
 
 class AccountConnect(BaseModel):
@@ -10,4 +10,4 @@ class AccountConnect(BaseModel):
     imap_port: int
     smtp_host: str
     smtp_port: int
-    password: str
+    password: SecretStr
