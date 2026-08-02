@@ -4,7 +4,7 @@ import uvicorn
 
 
 def main() -> None:
-    uvicorn.run("mailchat.main:app", host="127.0.0.1", port=8000)
+    uvicorn.run("mailchat.main:production_app", factory=True, host="127.0.0.1", port=8000)
 
 
 if __name__ == "__main__":

@@ -1,17 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-
-import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-
-from mailchat.mail import get_imap, get_smtp
 from mailchat.mail.imap import ImapLoginError, ImapOperationError
 from mailchat.mail.smtp import SmtpLoginError
-from mailchat.main import create_app
-from mailchat.shared.db import get_db
-from tests.fakes import FakeImap, FakeSmtp
 
 ACCOUNT_FORM_DATA = {
     "provider": "t-online",
@@ -22,33 +12,6 @@ ACCOUNT_FORM_DATA = {
     "smtp_port": 465,
     "password": "app-specific-secret",
 }
-
-
-@pytest.fixture
-def imap() -> FakeImap:
-    """The IMAP server the app talks to for the whole test; seed it per test."""
-    return FakeImap()
-
-
-@pytest.fixture
-def smtp() -> FakeSmtp:
-    """The SMTP server the app talks to for the whole test; it accepts every login."""
-    return FakeSmtp()
-
-
-@pytest.fixture
-def client(session_factory: async_sessionmaker[AsyncSession], imap: FakeImap, smtp: FakeSmtp):
-    async def override_get_db() -> AsyncIterator[AsyncSession]:
-        async with session_factory() as session:
-            yield session
-
-    app = create_app()
-    app.dependency_overrides[get_db] = override_get_db
-    app.dependency_overrides[get_imap] = lambda: imap
-    app.dependency_overrides[get_smtp] = lambda: smtp
-
-    with TestClient(app) as test_client:
-        yield test_client
 
 
 def test_accounts_page_renders_form(client):

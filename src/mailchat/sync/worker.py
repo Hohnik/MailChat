@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -19,6 +20,13 @@ logger = logging.getLogger(__name__)
 # The only folder the worker syncs so far; the Sent folder follows once
 # outgoing mail lands in the same list.
 SYNCED_FOLDERS = ("INBOX",)
+
+
+class SyncWorker(Protocol):
+    """A loop that keeps one database's accounts in sync for as long as it runs
+    — `poll_forever` with an interval bound to it, or a test's stand-in."""
+
+    async def __call__(self, session_factory: async_sessionmaker[AsyncSession]) -> None: ...
 
 
 async def sync_account(session: AsyncSession, account: Account, *, imap: Imap = imap_module) -> list[Message]:

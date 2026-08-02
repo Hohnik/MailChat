@@ -1,29 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-
-import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-
 from mailchat.accounts import repository as accounts_repository
-from mailchat.main import create_app
 from mailchat.messages.models import Message
-from mailchat.shared.db import get_db
 from mailchat.shared.security import encrypt
-
-
-@pytest.fixture
-def client(session_factory: async_sessionmaker[AsyncSession]):
-    async def override_get_db() -> AsyncIterator[AsyncSession]:
-        async with session_factory() as session:
-            yield session
-
-    app = create_app()
-    app.dependency_overrides[get_db] = override_get_db
-
-    with TestClient(app) as test_client:
-        yield test_client
 
 
 async def _seed_account_with_messages(session_factory, *, message_count: int = 2):
