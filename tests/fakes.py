@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from mailchat.mail.imap import ImapCredentials, ImapError
+from mailchat.mail.smtp import SmtpCredentials, SmtpError
 
 
 @dataclass
@@ -46,6 +47,35 @@ class FakeImap:
         self.seen.append(credentials)
         if self.delay_seconds:
             await asyncio.sleep(self.delay_seconds)
+        error = self.errors.get(credentials.username)
+        if error is not None:
+            raise error
+
+
+@dataclass
+class FakeSmtp:
+    """Stands in for `mailchat.mail.smtp` wherever a caller takes an `Smtp`.
+
+    Accepts every login unless `errors` maps the account's address to the error
+    its calls should raise — enough to make one account's SMTP fail while the
+    others keep working.
+    """
+
+    errors: dict[str, SmtpError] = field(default_factory=dict)
+    seen: list[SmtpCredentials] = field(default_factory=list)
+    """The credentials of every call so far, in order."""
+
+    async def verify(self, credentials: SmtpCredentials) -> None:
+        self._log_in(credentials)
+
+    async def send(
+        self, credentials: SmtpCredentials, sender: str, recipient: str, subject: str, body: str
+    ) -> None:
+        # Here so the fake satisfies `Smtp`; sending has no caller to test yet.
+        self._log_in(credentials)
+
+    def _log_in(self, credentials: SmtpCredentials) -> None:
+        self.seen.append(credentials)
         error = self.errors.get(credentials.username)
         if error is not None:
             raise error

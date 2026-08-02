@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import dataclass
 
@@ -10,11 +9,11 @@ from mailchat.accounts import repository
 from mailchat.accounts.models import Account
 from mailchat.accounts.schemas import AccountConnect
 from mailchat.mail import imap as imap_module
+from mailchat.mail import smtp as smtp_module
 from mailchat.mail.imap import Imap, ImapCredentials, ImapError, ImapLoginError
+from mailchat.mail.smtp import Smtp, SmtpCredentials, SmtpError
 from mailchat.shared.exceptions import AccountConnectionError, AccountNotFoundError, UnknownFolderError
 from mailchat.shared.security import decrypt, encrypt
-from mailchat.sync.smtp_client import SmtpCredentials
-from mailchat.sync.smtp_client import connect as smtp_connect
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +41,13 @@ def imap_credentials_for(account: Account) -> ImapCredentials:
     )
 
 
-async def connect(session: AsyncSession, request: AccountConnect, *, imap: Imap = imap_module) -> AccountFolders:
+async def connect(
+    session: AsyncSession,
+    request: AccountConnect,
+    *,
+    imap: Imap = imap_module,
+    smtp: Smtp = smtp_module,
+) -> AccountFolders:
     password = request.password.get_secret_value()
     imap_credentials = ImapCredentials(
         host=request.imap_host, port=request.imap_port, username=request.address, password=password
@@ -52,7 +57,7 @@ async def connect(session: AsyncSession, request: AccountConnect, *, imap: Imap 
     )
 
     folders = await _verified_folders(imap, imap_credentials)
-    await _verify_smtp(smtp_credentials)
+    await _verify_smtp(smtp, smtp_credentials)
 
     account = await repository.create_account(
         session,
@@ -110,15 +115,10 @@ async def _verified_folders(imap: Imap, credentials: ImapCredentials) -> list[st
         return []
 
 
-async def _verify_smtp(credentials: SmtpCredentials) -> None:
-    def log_in_and_out() -> None:
-        with smtp_connect(credentials):
-            pass
-
+async def _verify_smtp(smtp: Smtp, credentials: SmtpCredentials) -> None:
     try:
-        # smtplib is blocking; keep a slow server off the event loop.
-        await asyncio.to_thread(log_in_and_out)
-    except Exception as error:
+        await smtp.verify(credentials)
+    except SmtpError as error:
         raise AccountConnectionError(f"Could not connect to {credentials.username}: {error}") from error
 
 

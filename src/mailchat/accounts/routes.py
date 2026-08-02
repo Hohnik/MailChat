@@ -16,8 +16,9 @@ from mailchat.accounts.service import (
     set_sent_folder,
 )
 from mailchat.accounts.templates import accounts_page, accounts_section, sent_folder_picker
-from mailchat.mail import get_imap
+from mailchat.mail import get_imap, get_smtp
 from mailchat.mail.imap import Imap
+from mailchat.mail.smtp import Smtp
 from mailchat.shared.db import get_db
 from mailchat.shared.exceptions import AccountConnectionError, MailChatError
 from mailchat.shared.layout import page
@@ -35,6 +36,7 @@ async def list_accounts_page(session: AsyncSession = Depends(get_db)) -> str:
 async def create_account(
     session: AsyncSession = Depends(get_db),
     imap: Imap = Depends(get_imap),
+    smtp: Smtp = Depends(get_smtp),
     provider: str = Form(...),
     address: str = Form(...),
     imap_host: str = Form(...),
@@ -56,7 +58,7 @@ async def create_account(
     error = None
     picker = None
     try:
-        connected = await connect(session, request, imap=imap)
+        connected = await connect(session, request, imap=imap, smtp=smtp)
         picker = _picker_for(connected)
     except AccountConnectionError as exc:
         error = str(exc)

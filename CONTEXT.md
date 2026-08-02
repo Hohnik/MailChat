@@ -7,7 +7,8 @@ glossary — use these words in code, tests, and issues.
 
 **Account** — one mail service MailChat has been given credentials for: an
 address, an IMAP host/port, an SMTP host/port, and an encrypted password.
-Connecting an account proves the credentials before anything is stored.
+Connecting an account proves the credentials on both protocols — IMAP by
+listing folders, SMTP by logging in — before anything is stored.
 
 **Credentials** — an account's stored login. Held encrypted; decrypted only to
 hand to a mail server.
@@ -34,10 +35,11 @@ failure never stops the others.
 ## The mail package
 
 `src/mailchat/mail/` is how the app talks to mail servers. It takes credentials
-and returns domain values — folders, raw messages. Callers never see a
-connection handle, never learn that the protocol libraries block, and never
-reach for `imaplib` themselves; the package owns connection lifetime, the wire
-format, and the threads that keep blocking calls off the event loop.
+and returns domain values — folders, raw messages, a verdict on a login. Callers
+never see a connection handle, never learn that the protocol libraries block,
+and never reach for `imaplib` or `smtplib` themselves; the package owns
+connection lifetime, the wire format, and the threads that keep blocking calls
+off the event loop.
 
 `mail.imap` is the whole IMAP interface:
 
@@ -46,17 +48,32 @@ format, and the threads that keep blocking calls off the event loop.
 - `fetch(credentials, folders, limit=10)` — the most recent raw messages from
   each named folder. No default folder; callers say what they want.
 
-**Login error vs. operation error.** `ImapLoginError` means there is no
-session — bad password, unreachable host — and is fatal. `ImapOperationError`
-means the login worked but a command afterwards didn't, and is survivable: an
+`mail.smtp` is the whole SMTP interface:
+
+- `verify(credentials)` — proof that the server accepts this login, and nothing
+  else. SMTP's whole production job today.
+- `send(credentials, sender, recipient, subject, body)` — one plain-text
+  message. No production caller yet; its signature will grow In-Reply-To and
+  References when replies become threaded.
+
+`ImapCredentials` and `SmtpCredentials` stay separate types despite being
+structurally identical — merging them would couple two modules that are
+deliberately apart.
+
+**Login error vs. operation error.** Both protocols split their failures the
+same way. A `…LoginError` means there is no session — bad password, unreachable
+host — and is always fatal. A `…OperationError` means the login worked but a
+command afterwards didn't; whether that is survivable is the caller's call. An
 account whose server refuses to `LIST` still connects, and the user picks their
-Sent folder later. Nothing else escapes the package; both derive from
-`ImapError`.
+Sent folder later — but connecting treats any SMTP failure as fatal, because an
+account that can't send isn't one yet. Nothing else escapes the package: every
+error out of it derives from `ImapError` or from `SmtpError`.
 
-**Injecting it.** Callers type the dependency as the `Imap` protocol and default
-it to the module, so tests pass a fake in rather than patching. Routes take it
-as a FastAPI dependency (`get_imap`) that tests override.
+**Injecting it.** Callers type the dependency as the `Imap` or `Smtp` protocol
+and default it to the module, so tests pass a fake in rather than patching.
+Routes take them as FastAPI dependencies (`get_imap`, `get_smtp`) that tests
+override.
 
-`mail.imap`'s own tests reach its internals through a stubbed `Transport` — the
-seam that stands in for `imaplib.IMAP4_SSL` — so they still exercise the public
-interface. `sync.smtp_client` has not moved into the package yet.
+Each module's own tests reach its internals through a stubbed `Transport` — the
+seam that stands in for `imaplib.IMAP4_SSL` or `smtplib.SMTP_SSL` — so they
+still exercise the public interface.

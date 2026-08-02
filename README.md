@@ -24,8 +24,9 @@ mailchat/
 │       │   └── routes.py
 │       │
 │       ├── mail/                  # Talking to mail servers
-│       │   ├── __init__.py        # get_imap (FastAPI dependency)
-│       │   └── imap.py            # Folders and raw messages, from credentials
+│       │   ├── __init__.py        # get_imap, get_smtp (FastAPI dependencies)
+│       │   ├── imap.py            # Folders and raw messages, from credentials
+│       │   └── smtp.py            # Verifying a login and sending, from credentials
 │       │
 │       ├── messages/              # Individual mails/chat bubbles
 │       │   ├── __init__.py
@@ -37,7 +38,6 @@ mailchat/
 │       │
 │       ├── sync/                  # The heart of the app: mail ingestion
 │       │   ├── __init__.py
-│       │   ├── smtp_client.py     # Sending
 │       │   ├── gmail_client.py    # Provider-specific APIs (optional)
 │       │   ├── parser.py          # RFC 822 parsing, MIME, HTML→text
 │       │   ├── threading.py       # Message-ID/In-Reply-To/References matching
@@ -65,7 +65,8 @@ mailchat/
 ├── tests/
 │   ├── fakes.py                   # FakeImap and friends, injected by callers' tests
 │   ├── test_mail/
-│   │   └── test_imap.py
+│   │   ├── test_imap.py
+│   │   └── test_smtp.py
 │   ├── test_sync/
 │   │   ├── test_parser.py
 │   │   └── test_threading.py
