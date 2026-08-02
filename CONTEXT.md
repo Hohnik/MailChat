@@ -26,10 +26,17 @@ didn't offer. Unset until they choose.
 **Raw message** — one message as the server sent it, RFC 822 bytes, before
 parsing. What the `mail` package deals in.
 
-**Message** — a parsed, normalized, stored mail belonging to one account.
+**Message** — one stored mail belonging to one account, parsed out of the raw
+message a server sent.
 
-**Sync** — one pass over an account's folders, turning raw messages into
-messages. The worker syncs every account on a poll interval; one account's
+**Ingestion** — the one step from raw messages to stored messages: parse them,
+skip whatever the account holds already, persist the rest. A message is
+recognised by its `Message-ID`, per account — so the same message fetched by two
+polls is stored once, while one message id arriving at two accounts is two
+messages.
+
+**Sync** — one pass over an account's folders, fetching its raw messages and
+ingesting them. The worker syncs every account on a poll interval; one account's
 failure never stops the others.
 
 ## The mail package
@@ -77,3 +84,27 @@ override.
 Each module's own tests reach its internals through a stubbed `Transport` — the
 seam that stands in for `imaplib.IMAP4_SSL` or `smtplib.SMTP_SSL` — so they
 still exercise the public interface.
+
+## The ingestion module
+
+`src/mailchat/sync/ingest.py` is the whole way mail becomes rows.
+`ingest(session, account_id=…, raw_messages=…)` takes what a fetch returned and
+hands back a stored message per raw message, in the order they were fetched.
+The worker calls nothing else on the way to the table.
+
+Parsing is its internal: `sync/parser.py` reads RFC 822 bytes into a
+`ParsedMessage` — decoding headers, picking a body part, sanitising HTML — and
+no production code outside ingestion calls it. Its own tests do, the way the
+mail package's tests reach a `Transport`.
+
+**One field list on the way.** A parsed message becomes a row in `_message_for`,
+the only place between the parsed form and the table where a message's fields
+are named. A field that arrives with the fetch rather than in the mail itself —
+which is what conversation grouping adds next — is that function and its column,
+with nothing in between to keep in step.
+
+**What ingestion can't recognise.** Mail carrying no `Message-ID` is stored
+again every time it is fetched: matching it on anything else would risk merging
+unrelated mail, and a poll re-reads the same window, so copies accumulate. Mail
+that can't be parsed at all — an encoding Python doesn't know, say — is logged
+and left out, so one bad message costs its own row rather than the whole fetch.

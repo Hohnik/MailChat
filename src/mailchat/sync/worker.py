@@ -12,8 +12,7 @@ from mailchat.accounts.service import imap_credentials_for
 from mailchat.mail import imap as imap_module
 from mailchat.mail.imap import Imap
 from mailchat.messages.models import Message
-from mailchat.sync.normalize import normalize
-from mailchat.sync.parser import parse
+from mailchat.sync.ingest import ingest
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +31,7 @@ class SyncWorker(Protocol):
 async def sync_account(session: AsyncSession, account: Account, *, imap: Imap = imap_module) -> list[Message]:
     raw_messages = await imap.fetch(imap_credentials_for(account), SYNCED_FOLDERS)
 
-    return [await normalize(session, account_id=account.id, parsed=parse(raw)) for raw in raw_messages]
+    return await ingest(session, account_id=account.id, raw_messages=raw_messages)
 
 
 async def sync_all_accounts(

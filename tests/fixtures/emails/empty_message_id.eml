@@ -1,0 +1,10 @@
+Subject: Leere Kennung
+From: Absender <absender@example.com>
+To: kunde@example.com
+Date: Thu, 23 Jul 2026 09:16:00 +0200
+Message-ID:
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+MIME-Version: 1.0
+
+Der Server hat den Message-ID-Header leer gelassen.
