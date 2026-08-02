@@ -219,6 +219,19 @@ async def test_fetch_reads_each_folder_it_is_given():
     assert messages == [b"inbox mail", b"sent mail"]
 
 
+async def test_fetch_reads_every_folder_within_one_login():
+    connection = StubConnection({"INBOX": [b"inbox mail"], "Gesendet": [b"sent mail"]})
+    transport = StubTransport(connection)
+
+    await fetch(CREDENTIALS, ["INBOX", "Gesendet"], transport=transport)
+
+    # Folders are selected in turn inside one session, so an account that syncs
+    # its sent folder as well costs the same login a poll always cost.
+    assert transport.opened == [("secureimap.t-online.de", 993)]
+    assert connection.logins == [("user@t-online.de", "secret")]
+    assert connection.selections == [("INBOX", True), ("Gesendet", True)]
+
+
 async def test_fetch_raises_an_operation_error_when_the_folder_cannot_be_selected():
     connection = StubConnection(select_status="NO")
 

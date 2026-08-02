@@ -23,6 +23,13 @@ the test fake's seed — says `mailboxes`; everywhere else, say folder.
 picks it from the server's own list; MailChat won't accept a name the server
 didn't offer. Unset until they choose.
 
+**Synced folders** — the folders one pass of sync reads for an account: its
+inbox always, plus its Sent folder once picked — one folder, not two, for an
+account whose sent mail lands in the inbox. `accounts/folders.py` is the one
+place that answers it, off the account's own row — no login needed to learn what
+to fetch, and no second default hiding in a caller. Sync asks each pass, so a
+folder picked between polls is read by the next one.
+
 **Raw message** — one message as the server sent it, RFC 822 bytes, before
 parsing. What the `mail` package deals in.
 
@@ -35,9 +42,11 @@ recognised by its `Message-ID`, per account — so the same message fetched by t
 polls is stored once, while one message id arriving at two accounts is two
 messages.
 
-**Sync** — one pass over an account's folders, fetching its raw messages and
-ingesting them. The worker syncs every account on a poll interval; one account's
-failure never stops the others.
+**Sync** — one pass over an account's synced folders, fetching their raw
+messages in one login and ingesting them. The worker syncs every account on a
+poll interval; one account's failure never stops the others. Which folder a
+message came from isn't recorded yet — conversations are where that starts to
+matter.
 
 ## The mail package
 
