@@ -7,9 +7,11 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from mailchat.mail import get_imap
+from mailchat.mail.imap import ImapLoginError, ImapOperationError
 from mailchat.main import create_app
 from mailchat.shared.db import get_db
-from tests.test_accounts import stub_folders
+from tests.fakes import FakeImap
 
 ACCOUNT_FORM_DATA = {
     "provider": "t-online",
@@ -23,13 +25,20 @@ ACCOUNT_FORM_DATA = {
 
 
 @pytest.fixture
-def client(session_factory: async_sessionmaker[AsyncSession]):
+def imap() -> FakeImap:
+    """The IMAP server the app talks to for the whole test; seed it per test."""
+    return FakeImap()
+
+
+@pytest.fixture
+def client(session_factory: async_sessionmaker[AsyncSession], imap: FakeImap):
     async def override_get_db() -> AsyncIterator[AsyncSession]:
         async with session_factory() as session:
             yield session
 
     app = create_app()
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_imap] = lambda: imap
 
     with TestClient(app) as test_client:
         yield test_client
@@ -44,9 +53,8 @@ def test_accounts_page_renders_form(client):
 
 
 @patch("mailchat.sync.smtp_client.smtplib.SMTP_SSL")
-@patch("mailchat.sync.imap_client.imaplib.IMAP4_SSL")
-def test_submitted_account_appears_in_list(mock_imap_ssl, mock_smtp_ssl, client):
-    stub_folders(mock_imap_ssl, "INBOX", "Sent")
+def test_submitted_account_appears_in_list(mock_smtp_ssl, client, imap):
+    imap.offer("INBOX", "Sent")
 
     response = client.post("/accounts", data=ACCOUNT_FORM_DATA)
 
@@ -56,9 +64,8 @@ def test_submitted_account_appears_in_list(mock_imap_ssl, mock_smtp_ssl, client)
 
 
 @patch("mailchat.sync.smtp_client.smtplib.SMTP_SSL")
-@patch("mailchat.sync.imap_client.imaplib.IMAP4_SSL")
-def test_connection_failure_shows_error_and_does_not_list_account(mock_imap_ssl, mock_smtp_ssl, client):
-    mock_imap_ssl.return_value.login.side_effect = Exception("bad credentials")
+def test_connection_failure_shows_error_and_does_not_list_account(mock_smtp_ssl, client, imap):
+    imap.errors = {"user@t-online.de": ImapLoginError("bad credentials")}
 
     response = client.post("/accounts", data=ACCOUNT_FORM_DATA)
 
@@ -69,9 +76,8 @@ def test_connection_failure_shows_error_and_does_not_list_account(mock_imap_ssl,
 
 
 @patch("mailchat.sync.smtp_client.smtplib.SMTP_SSL")
-@patch("mailchat.sync.imap_client.imaplib.IMAP4_SSL")
-def test_multiple_accounts_are_all_listed(mock_imap_ssl, mock_smtp_ssl, client):
-    stub_folders(mock_imap_ssl, "INBOX", "Sent")
+def test_multiple_accounts_are_all_listed(mock_smtp_ssl, client, imap):
+    imap.offer("INBOX", "Sent")
     for address in ("first@t-online.de", "second@t-online.de"):
         client.post("/accounts", data={**ACCOUNT_FORM_DATA, "address": address})
 
@@ -82,9 +88,8 @@ def test_multiple_accounts_are_all_listed(mock_imap_ssl, mock_smtp_ssl, client):
 
 
 @patch("mailchat.sync.smtp_client.smtplib.SMTP_SSL")
-@patch("mailchat.sync.imap_client.imaplib.IMAP4_SSL")
-def test_disconnect_removes_account_from_list(mock_imap_ssl, mock_smtp_ssl, client):
-    stub_folders(mock_imap_ssl, "INBOX", "Sent")
+def test_disconnect_removes_account_from_list(mock_smtp_ssl, client, imap):
+    imap.offer("INBOX", "Sent")
     client.post("/accounts", data=ACCOUNT_FORM_DATA)
 
     response = client.post("/accounts/1/disconnect")
@@ -95,9 +100,8 @@ def test_disconnect_removes_account_from_list(mock_imap_ssl, mock_smtp_ssl, clie
 
 
 @patch("mailchat.sync.smtp_client.smtplib.SMTP_SSL")
-@patch("mailchat.sync.imap_client.imaplib.IMAP4_SSL")
-def test_connecting_offers_a_picker_of_the_servers_folders(mock_imap_ssl, mock_smtp_ssl, client):
-    stub_folders(mock_imap_ssl, "INBOX", "Sent", "Drafts")
+def test_connecting_offers_a_picker_of_the_servers_folders(mock_smtp_ssl, client, imap):
+    imap.offer("INBOX", "Sent", "Drafts")
 
     response = client.post("/accounts", data=ACCOUNT_FORM_DATA)
 
@@ -107,9 +111,8 @@ def test_connecting_offers_a_picker_of_the_servers_folders(mock_imap_ssl, mock_s
 
 
 @patch("mailchat.sync.smtp_client.smtplib.SMTP_SSL")
-@patch("mailchat.sync.imap_client.imaplib.IMAP4_SSL")
-def test_picker_preselects_sent_when_the_server_has_it(mock_imap_ssl, mock_smtp_ssl, client):
-    stub_folders(mock_imap_ssl, "INBOX", "Sent", "Drafts")
+def test_picker_preselects_sent_when_the_server_has_it(mock_smtp_ssl, client, imap):
+    imap.offer("INBOX", "Sent", "Drafts")
 
     response = client.post("/accounts", data=ACCOUNT_FORM_DATA)
 
@@ -117,9 +120,8 @@ def test_picker_preselects_sent_when_the_server_has_it(mock_imap_ssl, mock_smtp_
 
 
 @patch("mailchat.sync.smtp_client.smtplib.SMTP_SSL")
-@patch("mailchat.sync.imap_client.imaplib.IMAP4_SSL")
-def test_picker_preselects_no_folder_when_the_server_has_no_sent(mock_imap_ssl, mock_smtp_ssl, client):
-    stub_folders(mock_imap_ssl, "INBOX", "Gesendet", "Entwürfe")
+def test_picker_preselects_no_folder_when_the_server_has_no_sent(mock_smtp_ssl, client, imap):
+    imap.offer("INBOX", "Gesendet", "Entwürfe")
 
     response = client.post("/accounts", data=ACCOUNT_FORM_DATA)
 
@@ -129,9 +131,8 @@ def test_picker_preselects_no_folder_when_the_server_has_no_sent(mock_imap_ssl, 
 
 
 @patch("mailchat.sync.smtp_client.smtplib.SMTP_SSL")
-@patch("mailchat.sync.imap_client.imaplib.IMAP4_SSL")
-def test_chosen_sent_folder_is_stored_and_listed(mock_imap_ssl, mock_smtp_ssl, client):
-    stub_folders(mock_imap_ssl, "INBOX", "Gesendet")
+def test_chosen_sent_folder_is_stored_and_listed(mock_smtp_ssl, client, imap):
+    imap.offer("INBOX", "Gesendet")
     client.post("/accounts", data=ACCOUNT_FORM_DATA)
 
     response = client.post("/accounts/1/sent-folder", data={"sent_folder": "Gesendet"})
@@ -142,9 +143,8 @@ def test_chosen_sent_folder_is_stored_and_listed(mock_imap_ssl, mock_smtp_ssl, c
 
 
 @patch("mailchat.sync.smtp_client.smtplib.SMTP_SSL")
-@patch("mailchat.sync.imap_client.imaplib.IMAP4_SSL")
-def test_account_without_a_sent_folder_can_pick_one_later(mock_imap_ssl, mock_smtp_ssl, client):
-    stub_folders(mock_imap_ssl, "INBOX", "Gesendet")
+def test_account_without_a_sent_folder_can_pick_one_later(mock_smtp_ssl, client, imap):
+    imap.offer("INBOX", "Gesendet")
     client.post("/accounts", data=ACCOUNT_FORM_DATA)
 
     response = client.get("/accounts/1/sent-folder")
@@ -154,9 +154,8 @@ def test_account_without_a_sent_folder_can_pick_one_later(mock_imap_ssl, mock_sm
 
 
 @patch("mailchat.sync.smtp_client.smtplib.SMTP_SSL")
-@patch("mailchat.sync.imap_client.imaplib.IMAP4_SSL")
-def test_account_connects_without_a_picker_when_folders_cannot_be_listed(mock_imap_ssl, mock_smtp_ssl, client):
-    mock_imap_ssl.return_value.list.return_value = ("NO", [])
+def test_account_connects_without_a_picker_when_folders_cannot_be_listed(mock_smtp_ssl, client, imap):
+    imap.folders_error = ImapOperationError("LIST failed: NO")
 
     response = client.post("/accounts", data=ACCOUNT_FORM_DATA)
 
@@ -166,9 +165,8 @@ def test_account_connects_without_a_picker_when_folders_cannot_be_listed(mock_im
 
 
 @patch("mailchat.sync.smtp_client.smtplib.SMTP_SSL")
-@patch("mailchat.sync.imap_client.imaplib.IMAP4_SSL")
-def test_choosing_a_folder_the_server_lacks_shows_an_error(mock_imap_ssl, mock_smtp_ssl, client):
-    stub_folders(mock_imap_ssl, "INBOX", "Gesendet")
+def test_choosing_a_folder_the_server_lacks_shows_an_error(mock_smtp_ssl, client, imap):
+    imap.offer("INBOX", "Gesendet")
     client.post("/accounts", data=ACCOUNT_FORM_DATA)
 
     response = client.post("/accounts/1/sent-folder", data={"sent_folder": "Sent"})

@@ -9,11 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from mailchat.accounts import repository
 from mailchat.accounts.models import Account
 from mailchat.accounts.schemas import AccountConnect
+from mailchat.mail import imap as imap_module
+from mailchat.mail.imap import Imap, ImapCredentials, ImapError, ImapLoginError
 from mailchat.shared.exceptions import AccountConnectionError, AccountNotFoundError, UnknownFolderError
 from mailchat.shared.security import decrypt, encrypt
-from mailchat.sync.imap_client import ImapCredentials
-from mailchat.sync.imap_client import connect as imap_connect
-from mailchat.sync.imap_client import list_folders
 from mailchat.sync.smtp_client import SmtpCredentials
 from mailchat.sync.smtp_client import connect as smtp_connect
 
@@ -24,7 +23,7 @@ logger = logging.getLogger(__name__)
 class AccountFolders:
     """An account, plus the folders its IMAP server offered.
 
-    On connect the folders come from the same session that verified the
+    On connect the folders come from the same call that verified the
     credentials, so the caller can offer the Sent-folder picker without a
     second login. `folders` is empty when the server wouldn't list them.
     """
@@ -43,7 +42,7 @@ def imap_credentials_for(account: Account) -> ImapCredentials:
     )
 
 
-async def connect(session: AsyncSession, request: AccountConnect) -> AccountFolders:
+async def connect(session: AsyncSession, request: AccountConnect, *, imap: Imap = imap_module) -> AccountFolders:
     password = request.password.get_secret_value()
     imap_credentials = ImapCredentials(
         host=request.imap_host, port=request.imap_port, username=request.address, password=password
@@ -52,11 +51,8 @@ async def connect(session: AsyncSession, request: AccountConnect) -> AccountFold
         host=request.smtp_host, port=request.smtp_port, username=request.address, password=password
     )
 
-    try:
-        # imaplib/smtplib are blocking; keep a slow server off the event loop.
-        folders = await asyncio.to_thread(_verify, imap_credentials, smtp_credentials)
-    except Exception as error:
-        raise AccountConnectionError(f"Could not connect to {request.address}: {error}") from error
+    folders = await _verified_folders(imap, imap_credentials)
+    await _verify_smtp(smtp_credentials)
 
     account = await repository.create_account(
         session,
@@ -71,13 +67,17 @@ async def connect(session: AsyncSession, request: AccountConnect) -> AccountFold
     return AccountFolders(account=account, folders=folders)
 
 
-async def list_account_folders(session: AsyncSession, account_id: int) -> AccountFolders:
+async def list_account_folders(
+    session: AsyncSession, account_id: int, *, imap: Imap = imap_module
+) -> AccountFolders:
     """Re-list an existing account's folders, using its stored credentials."""
     account = await _get_account(session, account_id)
-    return AccountFolders(account=account, folders=await _folders_of(account))
+    return AccountFolders(account=account, folders=await _folders_of(imap, account))
 
 
-async def set_sent_folder(session: AsyncSession, account_id: int, folder: str) -> Account:
+async def set_sent_folder(
+    session: AsyncSession, account_id: int, folder: str, *, imap: Imap = imap_module
+) -> Account:
     """Record which folder holds this account's sent mail.
 
     The folder is checked against the server's own list rather than trusted from
@@ -85,7 +85,7 @@ async def set_sent_folder(session: AsyncSession, account_id: int, folder: str) -
     isn't there.
     """
     account = await _get_account(session, account_id)
-    if folder not in await _folders_of(account):
+    if folder not in await _folders_of(imap, account):
         raise UnknownFolderError(f"No folder named {repr(folder)} on the server")
 
     return await repository.set_sent_folder(session, account, folder)
@@ -95,35 +95,37 @@ async def disconnect(session: AsyncSession, account_id: int) -> None:
     await repository.delete_account(session, account_id)
 
 
-def _list_folders(credentials: ImapCredentials) -> list[str]:
-    with imap_connect(credentials) as connection:
-        return list_folders(connection)
+async def _verified_folders(imap: Imap, credentials: ImapCredentials) -> list[str]:
+    """Prove the IMAP credentials by listing folders, and keep the list.
 
-
-def _verify(imap_credentials: ImapCredentials, smtp_credentials: SmtpCredentials) -> list[str]:
-    """Prove both sets of credentials, and list the IMAP folders while logged in.
-
-    A listing that fails doesn't undo a successful login — the account is still
-    connected, the user just picks their Sent folder later.
+    A listing the server refuses doesn't undo a successful login — the account
+    still connects, the user just picks their Sent folder later.
     """
-    with imap_connect(imap_credentials) as connection:
-        try:
-            folders = list_folders(connection)
-        except Exception:
-            logger.exception("Could not list folders for %s", imap_credentials.username)
-            folders = []
-
-    with smtp_connect(smtp_credentials):
-        pass
-
-    return folders
-
-
-async def _folders_of(account: Account) -> list[str]:
     try:
-        # imaplib is blocking; keep a slow server off the event loop.
-        return await asyncio.to_thread(_list_folders, imap_credentials_for(account))
+        return await imap.folders(credentials)
+    except ImapLoginError as error:
+        raise AccountConnectionError(f"Could not connect to {credentials.username}: {error}") from error
+    except ImapError:
+        logger.exception("Could not list folders for %s", credentials.username)
+        return []
+
+
+async def _verify_smtp(credentials: SmtpCredentials) -> None:
+    def log_in_and_out() -> None:
+        with smtp_connect(credentials):
+            pass
+
+    try:
+        # smtplib is blocking; keep a slow server off the event loop.
+        await asyncio.to_thread(log_in_and_out)
     except Exception as error:
+        raise AccountConnectionError(f"Could not connect to {credentials.username}: {error}") from error
+
+
+async def _folders_of(imap: Imap, account: Account) -> list[str]:
+    try:
+        return await imap.folders(imap_credentials_for(account))
+    except ImapError as error:
         raise AccountConnectionError(f"Could not list folders for {account.address}: {error}") from error
 
 

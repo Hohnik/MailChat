@@ -16,6 +16,8 @@ from mailchat.accounts.service import (
     set_sent_folder,
 )
 from mailchat.accounts.templates import accounts_page, accounts_section, sent_folder_picker
+from mailchat.mail import get_imap
+from mailchat.mail.imap import Imap
 from mailchat.shared.db import get_db
 from mailchat.shared.exceptions import AccountConnectionError, MailChatError
 from mailchat.shared.layout import page
@@ -32,6 +34,7 @@ async def list_accounts_page(session: AsyncSession = Depends(get_db)) -> str:
 @router.post("", response_class=HTMLResponse)
 async def create_account(
     session: AsyncSession = Depends(get_db),
+    imap: Imap = Depends(get_imap),
     provider: str = Form(...),
     address: str = Form(...),
     imap_host: str = Form(...),
@@ -53,7 +56,7 @@ async def create_account(
     error = None
     picker = None
     try:
-        connected = await connect(session, request)
+        connected = await connect(session, request, imap=imap)
         picker = _picker_for(connected)
     except AccountConnectionError as exc:
         error = str(exc)
@@ -62,11 +65,13 @@ async def create_account(
 
 
 @router.get("/{account_id}/sent-folder", response_class=HTMLResponse)
-async def choose_sent_folder(account_id: int, session: AsyncSession = Depends(get_db)) -> str:
+async def choose_sent_folder(
+    account_id: int, session: AsyncSession = Depends(get_db), imap: Imap = Depends(get_imap)
+) -> str:
     error = None
     picker = None
     try:
-        picker = _picker_for(await list_account_folders(session, account_id))
+        picker = _picker_for(await list_account_folders(session, account_id, imap=imap))
     except MailChatError as exc:
         error = str(exc)
 
@@ -77,11 +82,12 @@ async def choose_sent_folder(account_id: int, session: AsyncSession = Depends(ge
 async def save_sent_folder(
     account_id: int,
     session: AsyncSession = Depends(get_db),
+    imap: Imap = Depends(get_imap),
     sent_folder: str = Form(...),
 ) -> str:
     error = None
     try:
-        await set_sent_folder(session, account_id, sent_folder)
+        await set_sent_folder(session, account_id, sent_folder, imap=imap)
     except MailChatError as exc:
         error = str(exc)
 

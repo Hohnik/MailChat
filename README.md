@@ -23,6 +23,10 @@ mailchat/
 │       │   ├── schemas.py
 │       │   └── routes.py
 │       │
+│       ├── mail/                  # Talking to mail servers
+│       │   ├── __init__.py        # get_imap (FastAPI dependency)
+│       │   └── imap.py            # Folders and raw messages, from credentials
+│       │
 │       ├── messages/              # Individual mails/chat bubbles
 │       │   ├── __init__.py
 │       │   ├── models.py          # Message, Attachment
@@ -33,7 +37,6 @@ mailchat/
 │       │
 │       ├── sync/                  # The heart of the app: mail ingestion
 │       │   ├── __init__.py
-│       │   ├── imap_client.py     # IMAP fetching (IDLE, polling)
 │       │   ├── smtp_client.py     # Sending
 │       │   ├── gmail_client.py    # Provider-specific APIs (optional)
 │       │   ├── parser.py          # RFC 822 parsing, MIME, HTML→text
@@ -60,6 +63,9 @@ mailchat/
 │           └── logging.py
 │
 ├── tests/
+│   ├── fakes.py                   # FakeImap and friends, injected by callers' tests
+│   ├── test_mail/
+│   │   └── test_imap.py
 │   ├── test_sync/
 │   │   ├── test_parser.py
 │   │   └── test_threading.py
@@ -67,6 +73,7 @@ mailchat/
 │   └── fixtures/
 │       └── emails/                # Sample .eml files for tests
 │
+├── CONTEXT.md                     # Domain glossary
 ├── pyproject.toml
 ├── README.md
 └── LICENSE
