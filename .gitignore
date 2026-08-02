@@ -62,6 +62,11 @@ local_settings.py
 db.sqlite3
 db.sqlite3-journal
 
+# MailChat's local database — holds encrypted credentials and synced mail.
+mailchat.db
+mailchat.db-shm
+mailchat.db-wal
+
 # Flask stuff:
 instance/
 .webassets-cache
