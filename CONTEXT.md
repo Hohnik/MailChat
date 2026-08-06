@@ -50,22 +50,36 @@ matter.
 
 ## The accounts module
 
-`accounts/service.py` is the only way into an account. Callers — routes, the
-sync worker — ask it for accounts as well as act on them: `list_accounts`,
-`get_account`, `connect`, `list_account_folders`, `set_sent_folder`,
-`disconnect`, and `imap_credentials_for` for the login sync fetches with.
-No production caller outside the package opens `accounts/repository.py`; tests
-still seed rows through it, the way they reach a module's internals elsewhere.
-`list_accounts` passes straight through to storage and is worth its own line
-anyway: one door in is what keeps a caller from growing a second answer behind
-the module's back.
+`accounts/service.py` is the only way to read or act on an account. Callers —
+routes, the sync worker — ask it for accounts as well as act on them:
+`list_accounts`, `get_account`, `connect`, `list_account_folders`,
+`set_sent_folder`, `disconnect`, and `imap_credentials_for` for the login sync
+fetches with. No production caller outside the package opens
+`accounts/repository.py`; tests still seed rows through it, the way they reach a
+module's internals elsewhere. `list_accounts` passes straight through to storage
+and is worth its own line anyway: one door in is what keeps a caller from
+growing a second answer behind the module's back.
+
+Storage is what the door is in front of — not the whole package. What else is
+public answers questions the service doesn't: `accounts/folders.py` for which
+folders one sync pass reads, `accounts/models.py` for the `Account` type
+everyone passes around, and `accounts/routes.py` for the HTTP surface `main.py`
+mounts.
 
 **One vocabulary for a missing account.** `get_account` raises
 `AccountNotFoundError` rather than handing back `None`, so "is there an account
-with this id?" has one answer everywhere. What that means for a request is
-decided once: `main.py` renders it as a 404, and the accounts routes catch it
-first only because their answer is the accounts section with the message above
-the list — the same place a refused login or an unknown folder lands.
+with this id?" has one answer everywhere — `disconnect` included, where an id
+that was never there used to pass for a disconnection that happened. Losing that
+quieter second answer is the point, and it is a real change in what the user
+sees: disconnecting an account twice now says so.
+
+What it means for a request is decided once per medium: `main.py` renders it as a
+404, and the accounts routes catch it first only because their answer is the
+accounts section with the message above the list — the same place a refused login
+or an unknown folder lands. Both keep the domain's own wording inside, because it
+names the id: that belongs in a log, not in front of someone who just clicked a
+button on a page that has gone stale. A refused login and an unknown folder do
+reach the page verbatim — those sentences were written for the user already.
 
 ## The mail package
 

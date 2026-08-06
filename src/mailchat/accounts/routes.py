@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 
 from fastapi import APIRouter, Depends, Form
 from fastapi.responses import HTMLResponse
@@ -10,16 +10,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from mailchat.accounts import service
 from mailchat.accounts.schemas import AccountConnect
-from mailchat.accounts.service import AccountFolders
 from mailchat.accounts.templates import accounts_page, accounts_section, sent_folder_picker
 from mailchat.mail import get_imap, get_smtp
 from mailchat.mail.imap import Imap
 from mailchat.mail.smtp import Smtp
 from mailchat.shared.db import get_db
-from mailchat.shared.exceptions import MailChatError
+from mailchat.shared.exceptions import AccountNotFoundError, MailChatError
 from mailchat.shared.layout import page
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
+
+ACCOUNT_GONE = "That account is no longer connected."
+"""What a missing account means to someone looking at the page.
+
+Every button that reaches these routes was rendered from the account list, so an
+id that isn't there means the page went stale — not that the user mistyped. The
+domain's own wording names the id, which belongs in a log; above an account list
+it reads like a stack trace, and the request carried the id anyway. `main.py`
+renders the same error in its own words, for the same reason.
+"""
 
 
 @router.get("", response_class=HTMLResponse)
@@ -51,14 +60,16 @@ async def create_account(
         smtp_port=smtp_port,
         password=SecretStr(password),
     )
-    return await _section(session, _picker_for(service.connect(session, request, imap=imap, smtp=smtp)))
+    return await _section_after(session, lambda: service.connect(session, request, imap=imap, smtp=smtp))
 
 
 @router.get("/{account_id}/sent-folder", response_class=HTMLResponse)
 async def choose_sent_folder(
     account_id: int, session: AsyncSession = Depends(get_db), imap: Imap = Depends(get_imap)
 ) -> str:
-    return await _section(session, _picker_for(service.list_account_folders(session, account_id, imap=imap)))
+    return await _section_after(
+        session, lambda: service.list_account_folders(session, account_id, imap=imap)
+    )
 
 
 @router.post("/{account_id}/sent-folder", response_class=HTMLResponse)
@@ -68,39 +79,51 @@ async def save_sent_folder(
     imap: Imap = Depends(get_imap),
     sent_folder: str = Form(...),
 ) -> str:
-    return await _section(session, service.set_sent_folder(session, account_id, sent_folder, imap=imap))
+    return await _section_after(
+        session, lambda: service.set_sent_folder(session, account_id, sent_folder, imap=imap)
+    )
 
 
 @router.post("/{account_id}/disconnect", response_class=HTMLResponse)
 async def disconnect_account(account_id: int, session: AsyncSession = Depends(get_db)) -> str:
-    return await _section(session, service.disconnect(session, account_id))
+    return await _section_after(session, lambda: service.disconnect(session, account_id))
 
 
-async def _picker_for(listing: Awaitable[AccountFolders]) -> Node | None:
-    """Wait on a listing of an account's folders and offer them to the user.
+def _picker_for(listed: service.AccountFolders | None) -> Node | None:
+    """The picker an action left behind, if it listed any folders.
 
-    No folders means the server wouldn't list them — the account list then
-    offers a `Choose sent folder` button to try again.
+    Nothing to pick from means either the action wasn't a listing at all, or the
+    server wouldn't list them — the account list then offers a `Choose sent
+    folder` button to try again.
     """
-    listed = await listing
-    if not listed.folders:
+    if listed is None or not listed.folders:
         return None
     return sent_folder_picker(listed.account, listed.folders)
 
 
-async def _section(session: AsyncSession, action: Awaitable[Node | None]) -> str:
-    """Run one thing the accounts module does, and render the section around it.
+async def _section_after(
+    session: AsyncSession, action: Callable[[], Awaitable[service.AccountFolders | None]]
+) -> str:
+    """Run one thing the accounts module does, then render the section around it.
 
     Every route here answers with the same section, so this is the one place a
     domain error — a refused login, a folder the server lacks, an account that
-    isn't there — becomes the message above the account list. Actions that
-    listed folders leave a picker behind; the rest leave none.
+    isn't there — becomes the message above the account list.
+
+    `action` is a callable rather than a coroutine so that nothing starts until
+    this function is ready to await it: a coroutine built at the call site and
+    never awaited would skip its database work with only a warning. Actions that
+    listed folders hand them back for the picker; the rest hand back nothing.
     """
     error = None
-    picker = None
+    listed = None
     try:
-        picker = await action
+        listed = await action()
+    except AccountNotFoundError:
+        error = ACCOUNT_GONE
     except MailChatError as exc:
         error = str(exc)
 
-    return str(accounts_section(await service.list_accounts(session), error=error, picker=picker))
+    return str(
+        accounts_section(await service.list_accounts(session), error=error, picker=_picker_for(listed))
+    )

@@ -63,8 +63,9 @@ async def _account_not_found(_: Request, __: Exception) -> Response:
 
     One place, for every route that asks it — the accounts section is the
     exception, and only because it catches the error first to render the message
-    in the page the user is already on. The domain's own wording stays inside;
-    a client that asked for an id already knows which one it asked for.
+    in the page the user is already on. Both keep the domain's own wording
+    inside: it names the id, which belongs in a log, and a client that asked for
+    an id already knows which one it asked for.
     """
     return JSONResponse(status_code=404, content={"detail": "Account not found"})
 

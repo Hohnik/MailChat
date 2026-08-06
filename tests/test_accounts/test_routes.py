@@ -139,7 +139,7 @@ def test_picking_a_folder_for_an_unknown_account_shows_an_error(client):
     response = client.get("/accounts/999/sent-folder")
 
     assert response.status_code == 200
-    assert "No account with id 999" in response.text
+    assert "That account is no longer connected." in response.text
     assert "No accounts connected yet." in response.text
 
 
@@ -147,14 +147,21 @@ def test_disconnecting_an_unknown_account_shows_an_error(client):
     response = client.post("/accounts/999/disconnect")
 
     assert response.status_code == 200
-    assert "No account with id 999" in response.text
+    assert "That account is no longer connected." in response.text
 
 
 def test_saving_a_folder_for_an_unknown_account_shows_an_error(client):
     response = client.post("/accounts/999/sent-folder", data={"sent_folder": "Sent"})
 
     assert response.status_code == 200
-    assert "No account with id 999" in response.text
+    assert "That account is no longer connected." in response.text
+
+
+def test_a_missing_account_is_not_reported_to_the_user_by_its_id(client):
+    """The domain names the id for the log; the page says what it means instead."""
+    response = client.post("/accounts/999/disconnect")
+
+    assert "999" not in response.text
 
 
 def test_choosing_a_folder_the_server_lacks_shows_an_error(client, imap):
