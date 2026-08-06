@@ -48,6 +48,25 @@ poll interval; one account's failure never stops the others. Which folder a
 message came from isn't recorded yet — conversations are where that starts to
 matter.
 
+## The accounts module
+
+`accounts/service.py` is the only way into an account. Callers — routes, the
+sync worker — ask it for accounts as well as act on them: `list_accounts`,
+`get_account`, `connect`, `list_account_folders`, `set_sent_folder`,
+`disconnect`, and `imap_credentials_for` for the login sync fetches with.
+No production caller outside the package opens `accounts/repository.py`; tests
+still seed rows through it, the way they reach a module's internals elsewhere.
+`list_accounts` passes straight through to storage and is worth its own line
+anyway: one door in is what keeps a caller from growing a second answer behind
+the module's back.
+
+**One vocabulary for a missing account.** `get_account` raises
+`AccountNotFoundError` rather than handing back `None`, so "is there an account
+with this id?" has one answer everywhere. What that means for a request is
+decided once: `main.py` renders it as a 404, and the accounts routes catch it
+first only because their answer is the accounts section with the message above
+the list — the same place a refused login or an unknown folder lands.
+
 ## The mail package
 
 `src/mailchat/mail/` is how the app talks to mail servers. It takes credentials

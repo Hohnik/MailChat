@@ -41,6 +41,29 @@ def imap_credentials_for(account: Account) -> ImapCredentials:
     )
 
 
+async def list_accounts(session: AsyncSession) -> list[Account]:
+    """Every connected account, oldest first.
+
+    A pass-through to storage, and deliberately so: it is what makes this module
+    the only way in. A caller that reads accounts here reads them the same way it
+    acts on them, and hears about a missing one in the same vocabulary.
+    """
+    return await repository.list_accounts(session)
+
+
+async def get_account(session: AsyncSession, account_id: int) -> Account:
+    """The one answer to "is there an account with this id?".
+
+    Raises `AccountNotFoundError` rather than returning `None`, so that every
+    caller — routes included — deals with a missing account the same way instead
+    of inventing its own.
+    """
+    account = await repository.get_account(session, account_id)
+    if account is None:
+        raise AccountNotFoundError(f"No account with id {account_id}")
+    return account
+
+
 async def connect(
     session: AsyncSession,
     request: AccountConnect,
@@ -76,28 +99,33 @@ async def list_account_folders(
     session: AsyncSession, account_id: int, *, imap: Imap = imap_module
 ) -> AccountFolders:
     """Re-list an existing account's folders, using its stored credentials."""
-    account = await _get_account(session, account_id)
+    account = await get_account(session, account_id)
     return AccountFolders(account=account, folders=await _folders_of(imap, account))
 
 
 async def set_sent_folder(
     session: AsyncSession, account_id: int, folder: str, *, imap: Imap = imap_module
-) -> Account:
+) -> None:
     """Record which folder holds this account's sent mail.
 
     The folder is checked against the server's own list rather than trusted from
     the form, so a stale or hand-made request can't point sync at a folder that
     isn't there.
     """
-    account = await _get_account(session, account_id)
+    account = await get_account(session, account_id)
     if folder not in await _folders_of(imap, account):
         raise UnknownFolderError(f"No folder named {repr(folder)} on the server")
 
-    return await repository.set_sent_folder(session, account, folder)
+    await repository.set_sent_folder(session, account, folder)
 
 
 async def disconnect(session: AsyncSession, account_id: int) -> None:
-    await repository.delete_account(session, account_id)
+    """Forget an account and the credentials it was connected with.
+
+    An id that isn't there raises like it does anywhere else in this module,
+    rather than passing for a disconnection that happened.
+    """
+    await repository.delete_account(session, await get_account(session, account_id))
 
 
 async def _verified_folders(imap: Imap, credentials: ImapCredentials) -> list[str]:
@@ -127,10 +155,3 @@ async def _folders_of(imap: Imap, account: Account) -> list[str]:
         return await imap.folders(imap_credentials_for(account))
     except ImapError as error:
         raise AccountConnectionError(f"Could not list folders for {account.address}: {error}") from error
-
-
-async def _get_account(session: AsyncSession, account_id: int) -> Account:
-    account = await repository.get_account(session, account_id)
-    if account is None:
-        raise AccountNotFoundError(f"No account with id {account_id}")
-    return account

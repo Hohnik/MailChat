@@ -65,3 +65,10 @@ async def test_messages_page_404s_for_unknown_account(client):
     response = client.get("/accounts/999/messages")
 
     assert response.status_code == 404
+    assert response.json() == {"detail": "Account not found"}
+
+
+async def test_messages_list_fragment_404s_for_unknown_account(client):
+    response = client.get("/accounts/999/messages/list")
+
+    assert response.status_code == 404

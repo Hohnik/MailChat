@@ -6,7 +6,7 @@ from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from mailchat.accounts import repository as accounts_repository
+from mailchat.accounts import service as accounts_service
 from mailchat.accounts.folders import synced_folders
 from mailchat.accounts.models import Account
 from mailchat.accounts.service import imap_credentials_for
@@ -38,7 +38,7 @@ async def sync_all_accounts(
     session_factory: async_sessionmaker[AsyncSession], *, imap: Imap = imap_module
 ) -> None:
     async with session_factory() as session:
-        accounts = await accounts_repository.list_accounts(session)
+        accounts = await accounts_service.list_accounts(session)
 
     await asyncio.gather(*(_sync_account_safely(session_factory, account, imap) for account in accounts))
 

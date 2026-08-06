@@ -6,10 +6,21 @@ from sqlalchemy import select
 
 from mailchat.accounts.models import Account
 from mailchat.accounts.schemas import AccountConnect
-from mailchat.accounts.service import connect, disconnect, list_account_folders, set_sent_folder
+from mailchat.accounts.service import (
+    connect,
+    disconnect,
+    get_account,
+    list_account_folders,
+    list_accounts,
+    set_sent_folder,
+)
 from mailchat.mail.imap import ImapCredentials, ImapLoginError, ImapOperationError
 from mailchat.mail.smtp import SmtpCredentials, SmtpLoginError
-from mailchat.shared.exceptions import AccountConnectionError, UnknownFolderError
+from mailchat.shared.exceptions import (
+    AccountConnectionError,
+    AccountNotFoundError,
+    UnknownFolderError,
+)
 from mailchat.shared.security import decrypt
 from tests.fakes import FakeImap, FakeSmtp
 
@@ -67,6 +78,32 @@ async def test_connect_still_succeeds_when_the_server_refuses_to_list_folders(se
 
     assert connected.account.address == REQUEST.address
     assert connected.folders == []
+
+
+async def test_get_account_returns_the_connected_account(session):
+    connected = await connect(session, REQUEST, imap=FakeImap().offer("INBOX", "Sent"), smtp=FakeSmtp())
+
+    assert (await get_account(session, connected.account.id)).address == REQUEST.address
+
+
+async def test_get_account_raises_for_an_account_that_is_not_there(session):
+    with pytest.raises(AccountNotFoundError):
+        await get_account(session, 999)
+
+
+async def test_list_accounts_returns_every_connected_account(session):
+    imap = FakeImap().offer("INBOX", "Sent")
+    for address in ("first@t-online.de", "second@t-online.de"):
+        await connect(session, REQUEST.model_copy(update={"address": address}), imap=imap, smtp=FakeSmtp())
+
+    assert [account.address for account in await list_accounts(session)] == [
+        "first@t-online.de",
+        "second@t-online.de",
+    ]
+
+
+async def test_list_accounts_is_empty_before_anything_is_connected(session):
+    assert await list_accounts(session) == []
 
 
 async def test_list_account_folders_reconnects_with_the_stored_credentials(session):
@@ -132,6 +169,11 @@ async def test_connect_raises_and_does_not_persist_on_smtp_failure(session):
 
     result = await session.execute(select(Account))
     assert result.scalars().first() is None
+
+
+async def test_disconnect_raises_for_an_account_that_is_not_there(session):
+    with pytest.raises(AccountNotFoundError):
+        await disconnect(session, 999)
 
 
 async def test_disconnect_removes_account(session):

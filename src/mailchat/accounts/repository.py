@@ -52,8 +52,6 @@ async def set_sent_folder(session: AsyncSession, account: Account, folder: str) 
     return account
 
 
-async def delete_account(session: AsyncSession, account_id: int) -> None:
-    account = await get_account(session, account_id)
-    if account is not None:
-        await session.delete(account)
-        await session.commit()
+async def delete_account(session: AsyncSession, account: Account) -> None:
+    await session.delete(account)
+    await session.commit()

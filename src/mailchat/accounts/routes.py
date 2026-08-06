@@ -1,26 +1,22 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable
+
 from fastapi import APIRouter, Depends, Form
 from fastapi.responses import HTMLResponse
 from htpy import Node
 from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from mailchat.accounts import repository
+from mailchat.accounts import service
 from mailchat.accounts.schemas import AccountConnect
-from mailchat.accounts.service import (
-    AccountFolders,
-    connect,
-    disconnect,
-    list_account_folders,
-    set_sent_folder,
-)
+from mailchat.accounts.service import AccountFolders
 from mailchat.accounts.templates import accounts_page, accounts_section, sent_folder_picker
 from mailchat.mail import get_imap, get_smtp
 from mailchat.mail.imap import Imap
 from mailchat.mail.smtp import Smtp
 from mailchat.shared.db import get_db
-from mailchat.shared.exceptions import AccountConnectionError, MailChatError
+from mailchat.shared.exceptions import MailChatError
 from mailchat.shared.layout import page
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
@@ -28,8 +24,9 @@ router = APIRouter(prefix="/accounts", tags=["accounts"])
 
 @router.get("", response_class=HTMLResponse)
 async def list_accounts_page(session: AsyncSession = Depends(get_db)) -> str:
-    accounts = await repository.list_accounts(session)
-    return str(page(page_title="MailChat — Accounts", content=accounts_page(accounts)))
+    return str(
+        page(page_title="MailChat — Accounts", content=accounts_page(await service.list_accounts(session)))
+    )
 
 
 @router.post("", response_class=HTMLResponse)
@@ -54,30 +51,14 @@ async def create_account(
         smtp_port=smtp_port,
         password=SecretStr(password),
     )
-
-    error = None
-    picker = None
-    try:
-        connected = await connect(session, request, imap=imap, smtp=smtp)
-        picker = _picker_for(connected)
-    except AccountConnectionError as exc:
-        error = str(exc)
-
-    return await _render_section(session, error=error, picker=picker)
+    return await _section(session, _picker_for(service.connect(session, request, imap=imap, smtp=smtp)))
 
 
 @router.get("/{account_id}/sent-folder", response_class=HTMLResponse)
 async def choose_sent_folder(
     account_id: int, session: AsyncSession = Depends(get_db), imap: Imap = Depends(get_imap)
 ) -> str:
-    error = None
-    picker = None
-    try:
-        picker = _picker_for(await list_account_folders(session, account_id, imap=imap))
-    except MailChatError as exc:
-        error = str(exc)
-
-    return await _render_section(session, error=error, picker=picker)
+    return await _section(session, _picker_for(service.list_account_folders(session, account_id, imap=imap)))
 
 
 @router.post("/{account_id}/sent-folder", response_class=HTMLResponse)
@@ -87,31 +68,39 @@ async def save_sent_folder(
     imap: Imap = Depends(get_imap),
     sent_folder: str = Form(...),
 ) -> str:
-    error = None
-    try:
-        await set_sent_folder(session, account_id, sent_folder, imap=imap)
-    except MailChatError as exc:
-        error = str(exc)
-
-    return await _render_section(session, error=error)
+    return await _section(session, service.set_sent_folder(session, account_id, sent_folder, imap=imap))
 
 
 @router.post("/{account_id}/disconnect", response_class=HTMLResponse)
 async def disconnect_account(account_id: int, session: AsyncSession = Depends(get_db)) -> str:
-    await disconnect(session, account_id)
-    return await _render_section(session)
+    return await _section(session, service.disconnect(session, account_id))
 
 
-def _picker_for(listed: AccountFolders) -> Node | None:
-    """No folders means the server wouldn't list them — the account list then
-    offers a `Choose sent folder` button to try again."""
+async def _picker_for(listing: Awaitable[AccountFolders]) -> Node | None:
+    """Wait on a listing of an account's folders and offer them to the user.
+
+    No folders means the server wouldn't list them — the account list then
+    offers a `Choose sent folder` button to try again.
+    """
+    listed = await listing
     if not listed.folders:
         return None
     return sent_folder_picker(listed.account, listed.folders)
 
 
-async def _render_section(
-    session: AsyncSession, *, error: str | None = None, picker: Node | None = None
-) -> str:
-    accounts = await repository.list_accounts(session)
-    return str(accounts_section(accounts, error=error, picker=picker))
+async def _section(session: AsyncSession, action: Awaitable[Node | None]) -> str:
+    """Run one thing the accounts module does, and render the section around it.
+
+    Every route here answers with the same section, so this is the one place a
+    domain error — a refused login, a folder the server lacks, an account that
+    isn't there — becomes the message above the account list. Actions that
+    listed folders leave a picker behind; the rest leave none.
+    """
+    error = None
+    picker = None
+    try:
+        picker = await action
+    except MailChatError as exc:
+        error = str(exc)
+
+    return str(accounts_section(await service.list_accounts(session), error=error, picker=picker))
