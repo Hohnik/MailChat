@@ -46,10 +46,9 @@ async def get_account(session: AsyncSession, account_id: int) -> Account | None:
     return result.scalar_one_or_none()
 
 
-async def set_sent_folder(session: AsyncSession, account: Account, folder: str) -> Account:
+async def set_sent_folder(session: AsyncSession, account: Account, folder: str) -> None:
     account.sent_folder = folder
     await session.commit()
-    return account
 
 
 async def delete_account(session: AsyncSession, account: Account) -> None:

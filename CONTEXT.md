@@ -79,7 +79,11 @@ accounts section with the message above the list — the same place a refused lo
 or an unknown folder lands. Both keep the domain's own wording inside, because it
 names the id: that belongs in a log, not in front of someone who just clicked a
 button on a page that has gone stale. A refused login and an unknown folder do
-reach the page verbatim — those sentences were written for the user already.
+still reach the page as the domain phrased them. Each at least names something
+the user chose — the address they typed, the folder they picked — but each also
+carries the server's own words, and the unknown-folder message quotes with a
+Python `repr`. Holding those two to the same standard is a loose end, not a
+decision.
 
 ## The mail package
 

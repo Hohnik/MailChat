@@ -110,10 +110,12 @@ async def _section_after(
     domain error — a refused login, a folder the server lacks, an account that
     isn't there — becomes the message above the account list.
 
-    `action` is a callable rather than a coroutine so that nothing starts until
-    this function is ready to await it: a coroutine built at the call site and
-    never awaited would skip its database work with only a warning. Actions that
-    listed folders hand them back for the picker; the rest hand back nothing.
+    `action` is a callable rather than a coroutine so that building the work and
+    running it can't come apart: a coroutine made at the call site is already
+    live, and any path that returned before awaiting it would drop its database
+    work with nothing but a warning. No path here does that today — the callable
+    is what keeps it that way. Actions that listed folders hand them back for the
+    picker; the rest hand back nothing.
     """
     error = None
     listed = None
