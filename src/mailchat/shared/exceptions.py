@@ -13,5 +13,9 @@ class AccountNotFoundError(MailChatError):
     pass
 
 
+class ConversationNotFoundError(MailChatError):
+    pass
+
+
 class UnknownFolderError(MailChatError):
     pass

@@ -30,14 +30,10 @@ async def get_by_message_ids(
 
 
 async def store_messages(session: AsyncSession, messages: Sequence[Message]) -> None:
-    """Persist messages built elsewhere. Nothing is named here: the fields
-    arrived with them, and storage has no opinion on what a message holds."""
+    """Persist messages built elsewhere, and whatever else the session is
+    holding — an already-stored message the caller has since taken the server's
+    word for again rides out on the same commit. Nothing is named here: the
+    fields arrived with them, and storage has no opinion on what a message
+    holds."""
     session.add_all(messages)
     await session.commit()
-
-
-async def list_messages_for_account(session: AsyncSession, account_id: int) -> list[Message]:
-    result = await session.execute(
-        select(Message).where(Message.account_id == account_id).order_by(Message.date)
-    )
-    return list(result.scalars().all())

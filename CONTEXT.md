@@ -33,20 +33,72 @@ folder picked between polls is read by the next one.
 **Raw message** — one message as the server sent it, RFC 822 bytes, before
 parsing. What the `mail` package deals in.
 
+**Fetched message** — one raw message and what only the fetch knows about it:
+the folder it was found in, its UID there, that folder's UIDVALIDITY, and
+whether the server holds it flagged read. Folder, UID and UIDVALIDITY are one
+address between them — a UID means nothing without the folder it was handed out
+in, and nothing at all once that folder's UIDVALIDITY has moved on.
+
 **Message** — one stored mail belonging to one account, parsed out of the raw
-message a server sent.
+message a server sent, filed in one conversation. Its date is held in UTC,
+whatever zone the sender wrote it in — SQLite keeps the clock and drops the
+offset, so a conversation only reads in the order it was said if the offset is
+spent on the way in.
 
-**Ingestion** — the one step from raw messages to stored messages: parse them,
-skip whatever the account holds already, persist the rest. A message is
-recognised by its `Message-ID`, per account — so the same message fetched by two
-polls is stored once, while one message id arriving at two accounts is two
-messages.
+**Direction** — which way a message was going: `inbound` for mail that reached
+the user, `outbound` for mail they sent. Read from the folder it was fetched
+from — the inbox, or the account's Sent folder — and never from its headers,
+because the account that sent a message is the one whose Sent folder holds it,
+and no amount of reading `From` proves that.
 
-**Sync** — one pass over an account's synced folders, fetching their raw
-messages in one login and ingesting them. The worker syncs every account on a
-poll interval; one account's failure never stops the others. Which folder a
-message came from isn't recorded yet — conversations are where that starts to
-matter.
+**Read state** — the server's, not MailChat's. `Message.is_read` is a cache of
+the IMAP `\Seen` flag: seeded at ingest and overwritten by every poll that
+reaches the message, in both directions, so there is no pending or dirty state
+to reconcile — a local change that doesn't reach the server didn't happen.
+Conversations have no read state of their own; a conversation is unread when its
+messages are. Only inbound messages count towards that: a reply the user wrote
+is waiting for nobody, whatever their server flagged it.
+
+**Contact** — one person MailChat has mail from or to, known by one lowercased
+address. Two addresses belonging to one human stay two contacts. The display
+name is what the most recently sent message to name them called them — settled
+across a whole fetch, not message by message, because a fetch reads the inbox
+before the sent folder and would otherwise let old mail rename someone.
+
+**Me** — the one contact at `me@mailchat.local`, which mail the user exchanged
+with nobody but themselves groups under. Not a real address and never sent to:
+it exists so that a note forwarded between two of the user's own accounts lands
+somewhere instead of being dropped for having no other correspondent, and it
+splits by subject like any other contact.
+
+**Conversation** — one contact, one normalized subject: everything said between
+you on that topic. No account component — the same contact reaching two of the
+user's mailboxes is one conversation, because it is one conversation to them.
+
+**Normalized subject** — a subject with every `Re`/`Aw`/`Fwd`/`Fw`/`Wg` marker
+taken out of it, wherever in the string it sits, whitespace collapsed. A key to
+group by, never something shown: the message keeps the subject it arrived under.
+
+**Grouping** — deciding which conversation a message belongs in: who it is with,
+from the header its direction names, and what it is about, from its normalized
+subject. The correspondent is the first address in that header that isn't one of
+the user's own connected accounts, or *Me* when none is left; `Cc` is never
+consulted, so looping someone into a thread — or dropping them from it — never
+moves the conversation.
+`Message-ID`, `In-Reply-To` and `References` are stored on every message and
+asked by none of this.
+
+**Ingestion** — the one step from fetched messages to stored messages: parse
+them, group them into conversations, store what isn't stored already, and take
+the server's word again about the rest. A message is recognised by its
+`Message-ID`, per account — so the same message fetched by two polls is stored
+once, while one message id arriving at two accounts is two messages.
+
+**Sync** — one pass over an account's synced folders, fetching their messages in
+one login and ingesting them. The worker syncs every account on a poll interval;
+one account's failure never stops the others. Reading mail never marks it read:
+the fetch peeks at bodies and selects folders read-only, so a `\Seen` flag moves
+because the user read the mail somewhere, never because MailChat looked at it.
 
 ## The accounts module
 
@@ -98,8 +150,19 @@ off the event loop.
 
 - `folders(credentials)` — the folders the server offers. It doubles as the
   IMAP credential check: a successful call proves the login.
-- `fetch(credentials, folders, limit=10)` — the most recent raw messages from
-  each named folder. No default folder; callers say what they want.
+- `fetch(credentials, folders, limit=10)` — the most recent fetched messages
+  from each named folder. No default folder; callers say what they want.
+
+**Reading mail leaves it unread.** The fetch asks for `(UID FLAGS BODY.PEEK[])`
+against a folder selected `readonly=True`, and both halves are load-bearing. A
+non-PEEK body item (`RFC822`, `BODY[…]`) makes the server set `\Seen` on exactly
+the messages fetched, which is the newest few per folder every poll interval —
+so every new message would be marked read within a minute of arriving, before
+the user ever opened it, and since the server is authoritative, syncing would be
+quietly erasing MailChat's own unread state. `readonly=True` alone stops that;
+`BODY.PEEK[]` makes it a property of the fetch rather than of a `SELECT`
+argument someone could flip for an unrelated reason. The response comes back
+keyed `BODY[]` rather than `RFC822`, and the bytes are identical.
 
 `mail.smtp` is the whole SMTP interface:
 
@@ -134,23 +197,64 @@ still exercise the public interface.
 ## The ingestion module
 
 `src/mailchat/sync/ingest.py` is the whole way mail becomes rows.
-`ingest(session, account_id=…, raw_messages=…)` takes what a fetch returned and
-hands back a stored message per raw message, in the order they were fetched.
-The worker calls nothing else on the way to the table.
+`ingest(session, account=…, fetched=…)` takes what a fetch returned and hands
+back a stored message per fetched message, in the order they were fetched. The
+worker calls nothing else on the way to the table.
 
-Parsing is its internal: `sync/parser.py` reads RFC 822 bytes into a
-`ParsedMessage` — decoding headers, picking a body part, sanitising HTML — and
-no production code outside ingestion calls it. Its own tests do, the way the
-mail package's tests reach a `Transport`.
+Two internals answer to it. `sync/parser.py` reads RFC 822 bytes into a
+`ParsedMessage` — decoding headers, picking a body part, sanitising HTML, and
+putting the date into UTC. `sync/grouping.py` reads a parsed message and says
+which conversation it belongs in: `direction_of` for which way it was going,
+then `group` for who it is with and what it is about. Between them they make an
+`Arrival` — one message read as far as it can be before the database is
+involved — and everything after that is rows. Neither is called by production
+code outside ingestion.
+Their own tests call them directly, the way the mail package's tests reach a
+`Transport` — grouping especially, because a rule about headers is worth reading
+on its own, with no database anywhere near it.
 
 **One field list on the way.** A parsed message becomes a row in `_message_for`,
 the only place between the parsed form and the table where a message's fields
-are named. A field that arrives with the fetch rather than in the mail itself —
-which is what conversation grouping adds next — is that function and its column,
-with nothing in between to keep in step.
+are named — including the four that arrive with the fetch rather than in the
+mail itself: `is_read` and the folder, UID and UIDVALIDITY that address it.
+
+**A message already stored is not left alone.** Read state and the address are
+the server's, so every poll that reaches a message takes its word for both again
+— `is_read` overwritten in whichever direction the flag moved, and the folder,
+UID and UIDVALIDITY rewritten together, so an address left stale by a UIDVALIDITY
+change heals on the next poll rather than pointing at whatever else took that
+number. Which conversation the message is filed under is not touched: that is
+MailChat's own reading of mail that hasn't changed. The refresh only reaches what
+each poll fetches — the newest ten per folder — so a message read elsewhere after
+it falls out of that window stays unread here.
 
 **What ingestion can't recognise.** Mail carrying no `Message-ID` is stored
 again every time it is fetched: matching it on anything else would risk merging
 unrelated mail, and a poll re-reads the same window, so copies accumulate. Mail
 that can't be parsed at all — an encoding Python doesn't know, say — is logged
 and left out, so one bad message costs its own row rather than the whole fetch.
+
+## The conversations module
+
+`conversations/service.py` is the door: `conversation_for` for ingestion,
+`list_conversations`, `get_conversation` and `messages_in` for the routes. It
+holds both models — a contact exists to key a conversation, and nothing else
+asks for one on its own. `get_conversation` raises `ConversationNotFoundError`
+rather than handing back `None`, the way `get_account` does, so a link to a
+conversation that has gone means one thing everywhere.
+
+**One lock, both rows, one commit.** Accounts sync side by side and a
+conversation belongs to no account, so two accounts meeting the same person for
+the first time in one poll are two tasks about to create the same contact and
+the same conversation. `conversation_for` holds one lock across both lookups and
+both creates and doesn't release it until the pair is committed, so the second
+task finds what the first one wrote. The keys are spelled out in the schema too
+— unique on a contact's address, unique on a conversation's contact and subject
+— not as the mechanism, but so that a lapse in it is a refused write to fix
+rather than a second half-conversation nobody notices.
+
+**Nothing about a conversation is stored twice.** Its unread count and the time
+it was last spoken in are counted off its messages whenever the list is drawn,
+in the same query that fetches the rows. Keeping either on the conversation
+would be the same answer until the day a write is missed, and then only one of
+them would still be true.

@@ -25,6 +25,24 @@ def test_parses_headers_from_simple_plain_text_message():
     assert "This is a test email sent by MailChat SMTP proof of concept" in parsed.body
 
 
+def test_a_date_is_read_into_utc_whatever_zone_the_sender_wrote_it_in():
+    # The same instant as the +02:00 above, said the way it is stored — SQLite
+    # keeps the clock and drops the offset, so two senders' mail is only
+    # comparable if the offset is spent before it gets there.
+    parsed = parse(_load("simple_text_plain.eml"))
+
+    assert parsed.date == datetime(2026, 7, 31, 11, 36, 53, tzinfo=timezone.utc)
+    assert parsed.date is not None and parsed.date.utcoffset() == timedelta(0)
+
+
+def test_a_date_the_sender_left_unzoned_is_read_as_utc():
+    raw = b"Subject: Ohne Zone\r\nDate: Fri, 31 Jul 2026 13:36:53 -0000\r\n\r\nbody\r\n"
+
+    parsed = parse(raw)
+
+    assert parsed.date == datetime(2026, 7, 31, 13, 36, 53, tzinfo=timezone.utc)
+
+
 def test_parses_cc_in_reply_to_and_references():
     parsed = parse(_load("reply_with_cc.eml"))
 

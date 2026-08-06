@@ -27,6 +27,25 @@ class ImapCredentials:
     password: str
 
 
+@dataclass(frozen=True)
+class FetchedMessage:
+    """One message a fetch brought back, with where it was found.
+
+    The bytes are the message; the rest is what only the fetch knows. `folder`
+    and `uid` are its address on the server — a UID means nothing without the
+    folder it was assigned in — and `uidvalidity` is what the server said that
+    folder's UIDs were worth at the time, so a later caller can tell whether the
+    address it stored still points at the same message. `is_read` is the
+    server's `\\Seen` flag, the only place read state is authoritative.
+    """
+
+    folder: str
+    uid: int
+    uidvalidity: int
+    is_read: bool
+    raw: bytes
+
+
 class ImapError(Exception):
     """Base for everything this module raises; nothing else escapes it."""
 
@@ -53,6 +72,7 @@ class ImapConnection(Protocol):
     def logout(self) -> Any: ...
     def list(self) -> tuple[str, list[Any]]: ...
     def select(self, mailbox: str, readonly: bool) -> tuple[str, list[Any]]: ...
+    def response(self, code: str) -> tuple[str, list[Any]]: ...
     def search(self, charset: str | None, *criteria: str) -> tuple[str, list[Any]]: ...
     def fetch(self, message_set: str, message_parts: str) -> tuple[str, list[Any]]: ...
 
@@ -72,7 +92,7 @@ class Imap(Protocol):
 
     async def fetch(
         self, credentials: ImapCredentials, folders: Sequence[str], limit: int = 10
-    ) -> list[bytes]: ...
+    ) -> list[FetchedMessage]: ...
 
 
 async def folders(credentials: ImapCredentials, *, transport: Transport = imaplib.IMAP4_SSL) -> list[str]:
@@ -90,8 +110,13 @@ async def fetch(
     limit: int = 10,
     *,
     transport: Transport = imaplib.IMAP4_SSL,
-) -> list[bytes]:
-    """The `limit` most recent raw messages from each of `folders`, in that order."""
+) -> list[FetchedMessage]:
+    """The `limit` most recent messages of each of `folders`, in that order.
+
+    Reading them leaves them exactly as they were: the folder is selected
+    read-only and the body asked for with `BODY.PEEK[]`, so nothing here can
+    mark mail read as a side effect of syncing it.
+    """
     return await asyncio.to_thread(_fetch_recent, credentials, folders, limit, transport)
 
 
@@ -156,30 +181,98 @@ def _folder_name(entry: bytes | tuple[bytes, bytes]) -> str | None:
 
 def _fetch_recent(
     credentials: ImapCredentials, folders: Sequence[str], limit: int, transport: Transport
-) -> list[bytes]:
+) -> list[FetchedMessage]:
     with _session(credentials, transport) as connection:
         return [message for folder in folders for message in _recent_in(connection, folder, limit)]
 
 
-def _recent_in(connection: ImapConnection, folder: str, limit: int) -> list[bytes]:
+def _recent_in(connection: ImapConnection, folder: str, limit: int) -> list[FetchedMessage]:
     status, _ = connection.select(folder, readonly=True)
     if status != "OK":
         raise ImapOperationError(f"SELECT {repr(folder)} failed: {status}")
+
+    uidvalidity = _uidvalidity(connection, folder)
 
     status, data = connection.search(None, "ALL")
     if status != "OK":
         raise ImapOperationError(f"SEARCH in {repr(folder)} failed: {status}")
 
     message_ids = data[0].split()[-limit:]
-    return [_raw_message(connection, message_id.decode()) for message_id in message_ids]
+    return [
+        _fetched(connection, folder, uidvalidity, message_id.decode()) for message_id in message_ids
+    ]
 
 
-def _raw_message(connection: ImapConnection, message_id: str) -> bytes:
-    status, response = connection.fetch(message_id, "(RFC822)")
+def _uidvalidity(connection: ImapConnection, folder: str) -> int:
+    """What the folder's UIDs are worth, off the SELECT that just ran.
+
+    A server must send this with every SELECT, and a UID stored without it is an
+    address that can silently come to mean another message: one that isn't there
+    is an answer this module won't invent.
+    """
+    _, data = connection.response("UIDVALIDITY")
+    value = data[0] if data else None
+    if value is None:
+        raise ImapOperationError(f"SELECT {repr(folder)} returned no UIDVALIDITY")
+    try:
+        return int(value)
+    except ValueError as error:
+        raise ImapOperationError(
+            f"SELECT {repr(folder)} returned an unreadable UIDVALIDITY: {repr(value)}"
+        ) from error
+
+
+_FETCH_UID = re.compile(rb"\bUID (\d+)")
+_FETCH_FLAGS = re.compile(rb"\bFLAGS \(([^)]*)\)")
+
+
+def _fetched(
+    connection: ImapConnection, folder: str, uidvalidity: int, message_id: str
+) -> FetchedMessage:
+    """One message, asked for in the one form that reads it without marking it read.
+
+    `BODY.PEEK[]` returns the same bytes `RFC822` would, minus the `\\Seen` the
+    server would set on the way — so the response comes back keyed `BODY[]`, and
+    the UID and flags asked for alongside it arrive in the same line.
+    """
+    status, response = connection.fetch(message_id, "(UID FLAGS BODY.PEEK[])")
     if status != "OK":
         raise ImapOperationError(f"FETCH {repr(message_id)} failed: {status}")
 
     message = response[0]
     if not isinstance(message, tuple):
         raise ImapOperationError(f"Unexpected FETCH response for {repr(message_id)}: {repr(response)}")
-    return message[1]
+
+    description, raw = message
+    return FetchedMessage(
+        folder=folder,
+        uid=_uid(description, message_id),
+        uidvalidity=uidvalidity,
+        is_read=_is_read(description),
+        raw=raw,
+    )
+
+
+def _uid(description: bytes, message_id: str) -> int:
+    """The UID out of a FETCH line — strictly, because it is an address.
+
+    A message stored under a guessed UID would send a later flag write at
+    whatever else that number now names in the user's real mailbox.
+    """
+    match = _FETCH_UID.search(description)
+    if match is None:
+        raise ImapOperationError(f"FETCH {repr(message_id)} returned no UID: {repr(description)}")
+    return int(match[1])
+
+
+def _is_read(description: bytes) -> bool:
+    """Whether the server holds this message flagged `\\Seen`.
+
+    Flags a server didn't send read as none — unread is the state the message
+    would have had anyway, and one quiet server costs its account nothing more.
+    """
+    match = _FETCH_FLAGS.search(description)
+    if match is None:
+        return False
+    # System flags are case-insensitive on the wire, whatever this server spells them.
+    return rb"\SEEN" in match[1].upper().split()

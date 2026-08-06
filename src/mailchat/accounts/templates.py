@@ -79,7 +79,6 @@ def account_list(accounts: list[Account]) -> Node:
             li(id=f"account-{account.id}")[
                 f"{account.address} ({account.provider})",
                 _sent_folder_status(account),
-                a(href=f"/accounts/{account.id}/messages")["View messages"],
                 form(
                     hx_post=f"/accounts/{account.id}/disconnect",
                     hx_target="#accounts-section",
@@ -104,4 +103,10 @@ def accounts_section(
 
 
 def accounts_page(accounts: list[Account]) -> Node:
-    return div[h1["Connected accounts"], accounts_section(accounts)]
+    # One link to the mail, not one per account: a conversation isn't an
+    # account's, and the same contact writing to two of them is one of them.
+    return div[
+        h1["Connected accounts"],
+        a(href="/conversations")["Conversations →"],
+        accounts_section(accounts),
+    ]

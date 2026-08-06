@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Sequence
 from typing import Any
 
 import pytest
@@ -15,11 +16,21 @@ CREDENTIALS = ImapCredentials(
 RAW_MESSAGE = b"Subject: hello\r\n\r\nbody\r\n"
 
 
+def _uid_of(number: str) -> int:
+    """The UID the stub gives the message at sequence number `number`.
+
+    Deliberately not the sequence number: a UID read off the wrong thing would
+    still look right if the two matched.
+    """
+    return int(number) * 10
+
+
 class StubConnection:
     """A tiny IMAP server: mailboxes of raw messages, plus canned failures.
 
     Only the commands the module issues are answered. Tests that care about the
     wire format hand `list_response` the exact entries a server would send.
+    `read_uids` are the messages this server holds flagged `\\Seen`.
     """
 
     def __init__(
@@ -33,6 +44,9 @@ class StubConnection:
         search_status: str = "OK",
         fetch_status: str = "OK",
         fetch_delay_seconds: float = 0.0,
+        uidvalidity: int | None = 42,
+        read_uids: Sequence[int] = (),
+        fetch_response: list[Any] | None = None,
     ) -> None:
         self.mailboxes = mailboxes or {}
         self.list_response = list_response
@@ -42,11 +56,15 @@ class StubConnection:
         self.search_status = search_status
         self.fetch_status = fetch_status
         self.fetch_delay_seconds = fetch_delay_seconds
+        self.uidvalidity = uidvalidity
+        self.read_uids = set(read_uids)
+        self.fetch_response = fetch_response
 
         self.logins: list[tuple[str, str]] = []
         self.logouts = 0
         self.selections: list[tuple[str, bool]] = []
         self.fetched_ids: list[str] = []
+        self.fetched_parts: list[str] = []
         self._selected: list[bytes] = []
 
     def login(self, user: str, password: str) -> tuple[str, list[Any]]:
@@ -71,6 +89,13 @@ class StubConnection:
         self._selected = self.mailboxes.get(mailbox, [])
         return ("OK", [str(len(self._selected)).encode()])
 
+    def response(self, code: str) -> tuple[str, list[Any]]:
+        # imaplib hands the untagged lines of the last SELECT back one code at a
+        # time, and answers [None] for a code the server never sent.
+        if code == "UIDVALIDITY" and self.uidvalidity is not None:
+            return (code, [str(self.uidvalidity).encode()])
+        return (code, [None])
+
     def search(self, charset: str | None, *criteria: str) -> tuple[str, list[Any]]:
         if self.search_status != "OK":
             return (self.search_status, [b""])
@@ -79,12 +104,20 @@ class StubConnection:
 
     def fetch(self, message_set: str, message_parts: str) -> tuple[str, list[Any]]:
         self.fetched_ids.append(message_set)
+        self.fetched_parts.append(message_parts)
         if self.fetch_delay_seconds:
             time.sleep(self.fetch_delay_seconds)
         if self.fetch_status != "OK":
             return (self.fetch_status, [b""])
+        if self.fetch_response is not None:
+            return ("OK", self.fetch_response)
+
         raw = self._selected[int(message_set) - 1]
-        return ("OK", [(f"{message_set} (RFC822 {{{len(raw)}}}".encode(), raw)])
+        uid = _uid_of(message_set)
+        flags = "\\Seen" if uid in self.read_uids else ""
+        prefix = f"{message_set} (UID {uid} FLAGS ({flags}) BODY[] {{{len(raw)}}}".encode()
+        # A real server closes the item list on a line of its own after the body.
+        return ("OK", [(prefix, raw), b")"])
 
 
 class StubTransport:
@@ -198,9 +231,71 @@ async def test_fetch_selects_readonly_and_returns_the_most_recent_messages():
 
     messages = await fetch(CREDENTIALS, ["INBOX"], limit=2, transport=StubTransport(connection))
 
-    assert messages == [b"four", b"five"]
+    assert [message.raw for message in messages] == [b"four", b"five"]
     assert connection.selections == [("INBOX", True)]
     assert connection.fetched_ids == ["4", "5"]
+
+
+async def test_fetch_never_asks_for_a_body_that_would_mark_mail_read():
+    connection = StubConnection({"INBOX": [RAW_MESSAGE]})
+
+    await fetch(CREDENTIALS, ["INBOX"], transport=StubTransport(connection))
+
+    # Both halves of the guard, because either alone leaves the side effect
+    # reachable: a non-PEEK body item makes the server set \Seen on exactly the
+    # messages fetched, and a readonly SELECT is what stops it if one ever
+    # returns. Reading mail must never be what marks it read.
+    assert connection.fetched_parts == ["(UID FLAGS BODY.PEEK[])"]
+    assert connection.selections == [("INBOX", True)]
+
+
+async def test_fetch_says_where_it_found_each_message():
+    connection = StubConnection({"Gesendet": [RAW_MESSAGE]}, uidvalidity=99)
+
+    messages = await fetch(CREDENTIALS, ["Gesendet"], transport=StubTransport(connection))
+
+    assert messages[0].folder == "Gesendet"
+    assert messages[0].uid == _uid_of("1")
+    assert messages[0].uidvalidity == 99
+
+
+async def test_fetch_reads_the_seen_flag_the_server_holds():
+    connection = StubConnection({"INBOX": [b"unread", b"read"]}, read_uids=[_uid_of("2")])
+
+    messages = await fetch(CREDENTIALS, ["INBOX"], transport=StubTransport(connection))
+
+    assert [message.is_read for message in messages] == [False, True]
+
+
+async def test_fetch_raises_an_operation_error_when_the_server_omits_the_uid():
+    # A UID is where a message lives; a body stored under a UID we guessed would
+    # point later flag writes at whatever else is sitting there.
+    connection = StubConnection(
+        {"INBOX": [RAW_MESSAGE]}, fetch_response=[(b"1 (FLAGS () BODY[] {5}", RAW_MESSAGE), b")"]
+    )
+
+    with pytest.raises(ImapOperationError):
+        await fetch(CREDENTIALS, ["INBOX"], transport=StubTransport(connection))
+
+
+async def test_fetch_reads_a_message_the_server_sent_no_flags_for_as_unread():
+    # Unread is the state it would have had anyway, and one quiet server costs
+    # its account nothing else.
+    connection = StubConnection(
+        {"INBOX": [RAW_MESSAGE]}, fetch_response=[(b"1 (UID 10 BODY[] {5}", RAW_MESSAGE), b")"]
+    )
+
+    messages = await fetch(CREDENTIALS, ["INBOX"], transport=StubTransport(connection))
+
+    assert messages[0].is_read is False
+    assert messages[0].uid == 10
+
+
+async def test_fetch_raises_an_operation_error_when_the_select_says_no_uidvalidity():
+    connection = StubConnection({"INBOX": [RAW_MESSAGE]}, uidvalidity=None)
+
+    with pytest.raises(ImapOperationError):
+        await fetch(CREDENTIALS, ["INBOX"], transport=StubTransport(connection))
 
 
 async def test_fetch_returns_every_message_when_the_mailbox_is_smaller_than_the_limit():
@@ -208,7 +303,7 @@ async def test_fetch_returns_every_message_when_the_mailbox_is_smaller_than_the_
 
     messages = await fetch(CREDENTIALS, ["INBOX"], transport=StubTransport(connection))
 
-    assert messages == [RAW_MESSAGE]
+    assert [message.raw for message in messages] == [RAW_MESSAGE]
 
 
 async def test_fetch_reads_each_folder_it_is_given():
@@ -216,7 +311,10 @@ async def test_fetch_reads_each_folder_it_is_given():
 
     messages = await fetch(CREDENTIALS, ["INBOX", "Gesendet"], transport=StubTransport(connection))
 
-    assert messages == [b"inbox mail", b"sent mail"]
+    assert [(message.folder, message.raw) for message in messages] == [
+        ("INBOX", b"inbox mail"),
+        ("Gesendet", b"sent mail"),
+    ]
 
 
 async def test_fetch_reads_every_folder_within_one_login():

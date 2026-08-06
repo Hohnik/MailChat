@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-from mailchat.mail.imap import ImapCredentials, ImapError
+from mailchat.mail.imap import FetchedMessage, ImapCredentials, ImapError
 from mailchat.mail.smtp import SmtpCredentials, SmtpError
 
 
@@ -13,8 +13,10 @@ class FakeImap:
     """Stands in for `mailchat.mail.imap` wherever a caller takes an `Imap`.
 
     Seed `mailboxes` with the folders the server offers and the raw messages in
-    each. `errors` maps an address to the error every call for that account
-    raises — enough to make one account fail while the others keep working.
+    each; a message's UID is its place in its folder, counting from one.
+    `read_uids` are the UIDs this server holds flagged read, in every folder.
+    `errors` maps an address to the error every call for that account raises —
+    enough to make one account fail while the others keep working.
     `folders_error` refuses the listing for every account, the way a server that
     accepts the login but won't LIST does.
     """
@@ -23,6 +25,8 @@ class FakeImap:
     errors: dict[str, ImapError] = field(default_factory=dict)
     folders_error: ImapError | None = None
     delay_seconds: float = 0.0
+    uidvalidity: int = 1
+    read_uids: set[int] = field(default_factory=set)
     seen: list[ImapCredentials] = field(default_factory=list)
     """The credentials of every call so far, in order."""
 
@@ -39,9 +43,19 @@ class FakeImap:
 
     async def fetch(
         self, credentials: ImapCredentials, folders: Sequence[str], limit: int = 10
-    ) -> list[bytes]:
+    ) -> list[FetchedMessage]:
         await self._connect(credentials)
-        return [message for folder in folders for message in self.mailboxes.get(folder, [])[-limit:]]
+        return [
+            FetchedMessage(
+                folder=folder,
+                uid=uid,
+                uidvalidity=self.uidvalidity,
+                is_read=uid in self.read_uids,
+                raw=raw,
+            )
+            for folder in folders
+            for uid, raw in list(enumerate(self.mailboxes.get(folder, []), start=1))[-limit:]
+        ]
 
     async def _connect(self, credentials: ImapCredentials) -> None:
         self.seen.append(credentials)

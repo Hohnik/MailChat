@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import email
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from email.header import decode_header
 from email.message import Message as EmailMessage
 from email.utils import parsedate_to_datetime
@@ -53,12 +53,24 @@ def _decode(header_value: str | None) -> str | None:
 
 
 def _parse_date(date_header: str | None) -> datetime | None:
+    """When the message was sent, in UTC.
+
+    Senders date their mail in their own zone, and what MailChat stores has to
+    be comparable across them — a conversation is read in the order things were
+    said, not in the order of the wall clocks they were said by. A header naming
+    no zone (or `-0000`, which means the sender wouldn't say) is read as UTC:
+    a guess, but the only one that keeps it comparable with the rest.
+    """
     if date_header is None:
         return None
     try:
-        return parsedate_to_datetime(date_header)
+        sent_at = parsedate_to_datetime(date_header)
     except (TypeError, ValueError):
         return None
+
+    if sent_at.tzinfo is None:
+        return sent_at.replace(tzinfo=timezone.utc)
+    return sent_at.astimezone(timezone.utc)
 
 
 def _extract_body(message: EmailMessage) -> str:

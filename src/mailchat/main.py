@@ -14,12 +14,25 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mailchat.accounts.routes import router as accounts_router
 from mailchat.config import get_settings
-from mailchat.messages.routes import router as messages_router
+from mailchat.conversations.routes import router as conversations_router
 from mailchat.shared.db import Database
-from mailchat.shared.exceptions import AccountNotFoundError
+from mailchat.shared.exceptions import AccountNotFoundError, ConversationNotFoundError
 from mailchat.sync.worker import SyncWorker, poll_forever
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+NOT_FOUND_DETAIL = {
+    AccountNotFoundError: "Account not found",
+    ConversationNotFoundError: "Conversation not found",
+}
+"""The domain's ways of saying a row isn't there, and what each answers over HTTP.
+
+One place, for every route that asks. The accounts section is the exception, and
+only because it catches its error first to render the message in the page the
+user is already on. All of it keeps the domain's own wording inside: that names
+the id, which belongs in a log, and a client that asked for an id already knows
+which one it asked for.
+"""
 
 
 def create_app(database: Database, *, sync_worker: SyncWorker | None) -> FastAPI:
@@ -38,10 +51,11 @@ def create_app(database: Database, *, sync_worker: SyncWorker | None) -> FastAPI
 
     app = FastAPI(title="MailChat", lifespan=lifespan)
     app.state.session_factory = database.sessions
-    app.add_exception_handler(AccountNotFoundError, _account_not_found)
+    for missing in NOT_FOUND_DETAIL:
+        app.add_exception_handler(missing, _not_found)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     app.include_router(accounts_router)
-    app.include_router(messages_router)
+    app.include_router(conversations_router)
     return app
 
 
@@ -58,16 +72,14 @@ def production_app() -> FastAPI:
     )
 
 
-async def _account_not_found(_: Request, __: Exception) -> Response:
-    """What an account the accounts module says isn't there means over HTTP.
+async def _not_found(_: Request, error: Exception) -> Response:
+    """What a row the domain says isn't there means over HTTP — see `NOT_FOUND_DETAIL`.
 
-    One place, for every route that asks it — the accounts section is the
-    exception, and only because it catches the error first to render the message
-    in the page the user is already on. Both keep the domain's own wording
-    inside: it names the id, which belongs in a log, and a client that asked for
-    an id already knows which one it asked for.
+    An error registered above but not spelled out there still answers 404, which
+    is the part the client acts on; only the wording falls back.
     """
-    return JSONResponse(status_code=404, content={"detail": "Account not found"})
+    detail = NOT_FOUND_DETAIL.get(type(error), "Not found")
+    return JSONResponse(status_code=404, content={"detail": detail})
 
 
 @asynccontextmanager

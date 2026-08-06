@@ -3,9 +3,13 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+from sqlalchemy import func, select
+
 from mailchat.accounts import repository as accounts_repository
+from mailchat.conversations import service as conversations_service
+from mailchat.conversations.models import Contact, Conversation
 from mailchat.mail.imap import ImapLoginError
-from mailchat.messages import repository as messages_repository
+from mailchat.messages.models import INBOUND, OUTBOUND, Message
 from mailchat.shared.security import encrypt
 from mailchat.sync.worker import sync_account, sync_all_accounts
 from tests.fakes import FakeImap
@@ -41,6 +45,12 @@ def _server_with_sent_mail(**kwargs) -> FakeImap:
         mailboxes={"INBOX": [_load("simple_text_plain.eml")], "Gesendet": [_load("reply_with_cc.eml")]},
         **kwargs,
     )
+async def _stored_for(session, account_id: int) -> list[Message]:
+    """What this account has in the table, oldest first."""
+    result = await session.execute(
+        select(Message).where(Message.account_id == account_id).order_by(Message.date)
+    )
+    return list(result.scalars().all())
 
 
 async def test_sync_account_persists_fetched_messages(session):
@@ -61,7 +71,7 @@ async def test_sync_account_is_idempotent_across_polls(session):
     await sync_account(session, account, imap=imap)
     await sync_account(session, account, imap=imap)
 
-    stored = await messages_repository.list_messages_for_account(session, account.id)
+    stored = await _stored_for(session, account.id)
     assert len(stored) == 1
 
 
@@ -101,7 +111,7 @@ async def test_choosing_a_sent_folder_takes_effect_on_the_next_poll(session_fact
     await sync_all_accounts(session_factory, imap=imap)
 
     async with session_factory() as check_session:
-        stored = await messages_repository.list_messages_for_account(check_session, account.id)
+        stored = await _stored_for(check_session, account.id)
     assert {message.subject for message in stored} == {
         "MailChat SMTP proof of concept",
         "Re: Terminanfrage",
@@ -119,7 +129,7 @@ async def test_syncing_several_folders_costs_one_login_per_account_per_poll(sess
 
     async with session_factory() as check_session:
         stored = {
-            account.address: await messages_repository.list_messages_for_account(check_session, account.id)
+            account.address: await _stored_for(check_session, account.id)
             for account in await accounts_repository.list_accounts(check_session)
         }
 
@@ -147,11 +157,73 @@ async def test_sync_all_accounts_isolates_one_account_failure(session_factory):
     await sync_all_accounts(session_factory, imap=imap)
 
     async with session_factory() as check_session:
-        working_messages = await messages_repository.list_messages_for_account(check_session, working_account.id)
-        broken_messages = await messages_repository.list_messages_for_account(check_session, broken_account.id)
+        working_messages = await _stored_for(check_session, working_account.id)
+        broken_messages = await _stored_for(check_session, broken_account.id)
 
     assert len(working_messages) == 1
     assert len(broken_messages) == 0
+
+
+async def test_a_sync_files_a_whole_mangled_thread_into_one_conversation(session):
+    # The whole path with only the server faked: the DL-4916597 thread as it
+    # really arrives — three inbound spellings of one subject and the reply the
+    # user sent, sitting in two folders.
+    account = await _create_account(session)
+    await accounts_repository.set_sent_folder(session, account, "Gesendet")
+    imap = FakeImap(
+        mailboxes={
+            "INBOX": [
+                _load("louis_ticket_opened.eml"),
+                _load("louis_ticket_answer.eml"),
+                _load("louis_ticket_forwarded.eml"),
+            ],
+            "Gesendet": [_load("louis_ticket_replied_to.eml")],
+        },
+        # Only the second message of the inbox; the sent folder has no UID 2.
+        read_uids={2},
+    )
+
+    messages = await sync_account(session, account, imap=imap)
+
+    conversation = await session.scalar(select(Conversation))
+    assert conversation is not None
+    assert conversation.normalized_subject == "[DL-4916597] Ihre Anfrage an Louis"
+    assert conversation.contact.address == "service@louis.de"
+    assert [message.conversation_id for message in messages] == [conversation.id] * 4
+    assert [message.direction for message in messages] == [INBOUND, INBOUND, INBOUND, OUTBOUND]
+    # The one message this server holds flagged read, and the folder and UID a
+    # flag written back would have to be addressed to.
+    assert [message.is_read for message in messages] == [False, True, False, False]
+    assert [(message.imap_folder, message.imap_uid) for message in messages] == [
+        ("INBOX", 1),
+        ("INBOX", 2),
+        ("INBOX", 3),
+        ("Gesendet", 1),
+    ]
+
+
+async def test_two_accounts_meeting_one_contact_at_once_create_one_of_each(session_factory):
+    # The same person writes to both of the user's mailboxes, and both accounts
+    # sync at the same time — the moment two tasks would each find no contact
+    # and each create one. One conversation is the point of not keying it by
+    # account; two rows for it would be two half-conversations instead.
+    async with session_factory() as setup_session:
+        for address in ("first@t-online.de", "second@t-online.de"):
+            await _create_account(setup_session, address=address)
+
+    imap = _inbox_holding(_load("louis_ticket_opened.eml"), delay_seconds=0.05)
+
+    await sync_all_accounts(session_factory, imap=imap)
+
+    async with session_factory() as check_session:
+        assert await check_session.scalar(select(func.count()).select_from(Contact)) == 1
+        assert await check_session.scalar(select(func.count()).select_from(Conversation)) == 1
+        # Both accounts stored the message: one conversation holding both is
+        # what proves they met in it rather than one of them failing quietly.
+        conversation = await check_session.scalar(select(Conversation))
+        assert conversation is not None
+        messages = await conversations_service.messages_in(check_session, conversation.id)
+        assert len(messages) == 2
 
 
 async def test_sync_all_accounts_runs_slow_accounts_concurrently(session_factory):
@@ -170,8 +242,8 @@ async def test_sync_all_accounts_runs_slow_accounts_concurrently(session_factory
     assert elapsed < delay_seconds * 1.5
 
     async with session_factory() as check_session:
-        first_messages = await messages_repository.list_messages_for_account(check_session, first_account.id)
-        second_messages = await messages_repository.list_messages_for_account(check_session, second_account.id)
+        first_messages = await _stored_for(check_session, first_account.id)
+        second_messages = await _stored_for(check_session, second_account.id)
 
     assert len(first_messages) == 1
     assert len(second_messages) == 1

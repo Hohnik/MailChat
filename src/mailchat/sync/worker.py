@@ -28,9 +28,9 @@ async def sync_account(session: AsyncSession, account: Account, *, imap: Imap = 
     """One pass over one account's synced folders, which the account itself
     answers for — asked again every pass, so nothing has to be restarted for a
     newly picked folder to be read."""
-    raw_messages = await imap.fetch(accounts_service.imap_credentials_for(account), synced_folders(account))
+    fetched = await imap.fetch(accounts_service.imap_credentials_for(account), synced_folders(account))
 
-    return await ingest(session, account_id=account.id, raw_messages=raw_messages)
+    return await ingest(session, account=account, fetched=fetched)
 
 
 async def sync_all_accounts(
